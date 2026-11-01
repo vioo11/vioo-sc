@@ -1,4 +1,4 @@
---// KBBI Word Finder GUI
+--// KBBI Word Finder GUi
 --// Premium Look + Smooth Animated Toggle
 
 local Players = game:GetService("Players")
