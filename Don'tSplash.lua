@@ -918,260 +918,154 @@ local function textInput(page, placeholder, onSubmit)
 end
 
 local function meters(v) return v .. "m" end
-local order = 0
-local function nextOrder()
-	order += 1
-	return order
-end
+----------------------------------------------------------------
+-- ISI: SPAWN
+----------------------------------------------------------------
+section(pageSpawn, "Status")
+local spawnStatus = statusCard(pageSpawn, "Belum ada spawn point.")
 
-local setters = {}
-
-local function section(page, text)
-	local f = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 24),
-		BackgroundTransparency = 1,
-		LayoutOrder = nextOrder(),
-	}, page)
-	local bar = new("Frame", {
-		Size = UDim2.fromOffset(3, 12),
-		Position = UDim2.new(0, 2, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		BackgroundColor3 = C.accent,
-		BorderSizePixel = 0,
-	}, f)
-	corner(bar, 2)
-	new("TextLabel", {
-		Size = UDim2.new(1, -14, 1, 0),
-		Position = UDim2.fromOffset(12, 0),
-		BackgroundTransparency = 1,
-		Text = string.upper(text),
-		Font = Enum.Font.GothamBold,
-		TextSize = 11,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.sub,
-	}, f)
-end
-
-local function row(page, height)
-	local r = new("TextButton", {
-		Size = UDim2.new(1, 0, 0, height or 40),
-		BackgroundColor3 = C.card,
-		AutoButtonColor = false,
-		Text = "",
-		LayoutOrder = nextOrder(),
-	}, page)
-	corner(r, 10)
-	return r
-end
-
-local function rowLabel(r, text, rightPad)
-	return new("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -(rightPad or 64), 1, 0),
-		Position = UDim2.fromOffset(12, 0),
-		Font = Enum.Font.GothamMedium,
-		TextSize = 13,
-		TextColor3 = C.text,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Text = text,
-	}, r)
-end
-
-local function toggle(page, label, key, onChange)
-	local r = row(page)
-	rowLabel(r, label, 64)
-	local track = new("Frame", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -10, 0.5, 0),
-		Size = UDim2.fromOffset(40, 22),
-		BackgroundColor3 = C.off,
-	}, r)
-	corner(track, 11)
-	local knob = new("Frame", {
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 3, 0.5, 0),
-		Size = UDim2.fromOffset(16, 16),
-		BackgroundColor3 = WHITE,
-	}, track)
-	corner(knob, 8)
-
-	local function refresh()
-		local on = S[key]
-		tween(track, { BackgroundColor3 = on and C.on or C.off })
-		tween(knob, { Position = on and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) })
+section(pageSpawn, "Aksi")
+actionButton(pageSpawn, "📍  Simpan Spawn Point", C.on, function()
+	local char = player.Character
+	local root = getRoot()
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not (root and hum and hum.Health > 0) then
+		spawnStatus.Text = "Tidak bisa menyimpan: karakter tidak ada atau sudah mati."
+		return
 	end
-	setters[key] = function(v)
-		S[key] = v
-		refresh()
-		if onChange then onChange() end
-	end
-	r.MouseButton1Click:Connect(function() setters[key](not S[key]) end)
-	refresh()
-end
+	saved = root.CFrame
+	placeMarker(saved)
+	local p = saved.Position
+	spawnStatus.Text = string.format("Tersimpan di (%d, %d, %d).", p.X, p.Y, p.Z)
+end)
 
-local function stepper(page, label, key, step, min, max, onChange, fmt)
-	local r = row(page)
-	rowLabel(r, label, 138)
-	local function small(txt, xOff)
-		local b = new("TextButton", {
-			AnchorPoint = Vector2.new(1, 0.5),
-			Position = UDim2.new(1, xOff, 0.5, 0),
-			Size = UDim2.fromOffset(28, 26),
-			BackgroundColor3 = C.off,
-			Text = txt,
-			Font = Enum.Font.GothamBold,
-			TextSize = 15,
-			TextColor3 = WHITE,
-		}, r)
-		corner(b, 8)
-		return b
+actionButton(pageSpawn, "🚀  Teleport ke Spawn Point", C.accent, function()
+	if not saved then
+		spawnStatus.Text = "Belum ada spawn point."
+		return
 	end
-	local plus = small("+", -8)
-	local minus = small("−", -86)
-	local val = new("TextLabel", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -36, 0.5, 0),
-		Size = UDim2.fromOffset(46, 26),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.GothamBold,
-		TextSize = 12,
-		TextColor3 = C.text,
-	}, r)
-	local function refresh() val.Text = fmt and fmt(S[key]) or tostring(S[key]) end
-	local function change(d)
-		S[key] = math.clamp(math.round((S[key] + d) * 100) / 100, min, max)
-		refresh()
-		if onChange then onChange() end
+	if teleportTo(saved + Vector3.new(0, 3, 0)) then
+		spawnStatus.Text = "Teleport ke spawn point."
 	end
-	minus.MouseButton1Click:Connect(function() change(-step) end)
-	plus.MouseButton1Click:Connect(function() change(step) end)
-	refresh()
-end
+end)
 
-local function cycle(page, label, key, options, onChange)
-	local r = row(page)
-	rowLabel(r, label, 120)
-	local pill = new("TextLabel", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -8, 0.5, 0),
-		Size = UDim2.fromOffset(100, 24),
-		BackgroundColor3 = C.accent,
-		Font = Enum.Font.GothamBold,
-		TextSize = 11,
-		TextColor3 = WHITE,
-	}, r)
-	corner(pill, 12)
-	local function refresh()
-		for _, o in ipairs(options) do
-			if o[1] == S[key] then pill.Text = o[2] end
+actionButton(pageSpawn, "🗑  Hapus Spawn Point", C.danger, function()
+	saved = nil
+	removeMarker()
+	spawnStatus.Text = "Spawn point dihapus. Respawn kembali ke titik bawaan."
+end)
+
+section(pageSpawn, "Opsi")
+toggle(pageSpawn, "Spawn otomatis saat mati", "AutoSpawn")
+toggle(pageSpawn, "Tampilkan penanda", "ShowMarker", function()
+	if saved then placeMarker(saved) else removeMarker() end
+end)
+
+----------------------------------------------------------------
+-- ISI: PLAYER
+----------------------------------------------------------------
+section(pagePlayer, "Utama")
+toggle(pagePlayer, "ESP Player", "EspPlayer")
+section(pagePlayer, "Tampilan")
+toggle(pagePlayer, "Tampilkan nama", "PName")
+toggle(pagePlayer, "Tampilkan jarak", "PDist")
+colorCycle(pagePlayer, "Warna", "PColor")
+section(pagePlayer, "Batas jarak")
+toggle(pagePlayer, "Aktifkan batas", "PLimitOn")
+stepper(pagePlayer, "Jarak maksimal", "PLimit", 50, 50, 2000, nil, meters)
+
+----------------------------------------------------------------
+-- ISI: MONSTER
+----------------------------------------------------------------
+section(pageMonster, "Utama")
+toggle(pageMonster, "ESP Monster", "EspMonster", function()
+	if S.EspMonster then startMonsterTrack() else stopMonsterTrack() end
+end)
+monsterInfo = statusCard(pageMonster, "ESP Monster belum aktif.")
+
+section(pageMonster, "Tampilan")
+toggle(pageMonster, "Tampilkan nama", "MName")
+toggle(pageMonster, "Tampilkan jarak", "MDist")
+toggle(pageMonster, "Pakai nama asli model", "MRealName")
+colorCycle(pageMonster, "Warna", "MColor")
+
+section(pageMonster, "Batas jarak")
+toggle(pageMonster, "Aktifkan batas", "MLimitOn")
+stepper(pageMonster, "Jarak maksimal", "MLimit", 50, 50, 2000, nil, meters)
+
+section(pageMonster, "Deteksi")
+textInput(pageMonster, "Filter nama, contoh: zombie", function(text)
+	S.MonsterFilter = string.lower(text:match("^%s*(.-)%s*$"))
+	if S.EspMonster then startMonsterTrack() end
+end)
+infoLabel(pageMonster, "Kosong = otomatis (punya Humanoid / AnimationController, atau nama berisi monster, enemy, mob, zombie, boss, npc). Diisi = hanya model dengan nama itu.")
+
+----------------------------------------------------------------
+-- ISI: VISUAL
+----------------------------------------------------------------
+section(pageVisual, "Lingkungan")
+toggle(pageVisual, "No Fog (hapus kabut)", "NoFog", function()
+	if S.NoFog then applyNoFog() else restoreFog() end
+end)
+toggle(pageVisual, "Fullbright (terang)", "Fullbright", function()
+	if S.Fullbright then applyFullbright() else restoreLight() end
+end)
+section(pageVisual, "Kamera")
+toggle(pageVisual, "Atur FOV kamera", "CustomFov", setFovMode)
+stepper(pageVisual, "Nilai FOV", "Fov", 5, 40, 120)
+infoLabel(pageVisual, "Saat dimatikan, kabut, cahaya, dan FOV kembali seperti semula.")
+
+----------------------------------------------------------------
+-- ISI: SETELAN
+----------------------------------------------------------------
+local function refreshLock()
+	lockBtn.Text = S.Locked and "🔒" or "🔓"
+	tween(lockBtn, { BackgroundColor3 = S.Locked and C.on or C.card })
+	mainStroke.Color = S.Locked and C.on or C.accent
+end
+lockBtn.MouseButton1Click:Connect(function() setters.Locked(not S.Locked) end)
+
+section(pageSet, "Jendela")
+toggle(pageSet, "Kunci posisi jendela", "Locked", refreshLock)
+stepper(pageSet, "Ukuran menu", "UiScale", 0.1, 0.6, 1.4, function()
+	uiScale.Scale = S.UiScale
+end, function(v) return math.floor(v * 100 + 0.5) .. "%" end)
+
+section(pageSet, "ESP")
+cycle(pageSet, "Gaya sorotan", "Style", {
+	{ "Isi", "Isi + Garis" },
+	{ "Garis", "Garis saja" },
+})
+
+section(pageSet, "Darurat")
+actionButton(pageSet, "⛔  Matikan semua fitur", C.danger, function()
+	for _, k in ipairs({ "EspPlayer", "EspMonster", "NoFog", "Fullbright", "CustomFov" }) do
+		if setters[k] then setters[k](false) end
+	end
+end)
+infoLabel(pageSet, "Toolkit v4 · tombol ✕ menutup menu, tombol ≡ membukanya lagi.")
+
+refreshLock()
+setTab("SPAWN")
+
+----------------------------------------------------------------
+-- RESPAWN -> PINDAH KE SPAWN POINT
+----------------------------------------------------------------
+player.CharacterAdded:Connect(function(char)
+	if not (S.AutoSpawn and saved) then return end
+
+	local root = char:WaitForChild("HumanoidRootPart", 10)
+	if not root then return end
+
+	local target = saved + Vector3.new(0, 3, 0)
+	char:PivotTo(target)
+
+	task.delay(0.15, function()
+		if char.Parent and S.AutoSpawn and saved then
+			char:PivotTo(target)
+			root.AssemblyLinearVelocity = Vector3.zero
 		end
-	end
-	r.MouseButton1Click:Connect(function()
-		local idx = 1
-		for i, o in ipairs(options) do
-			if o[1] == S[key] then idx = i end
-		end
-		S[key] = options[(idx % #options) + 1][1]
-		refresh()
-		if onChange then onChange() end
 	end)
-	refresh()
-end
 
-local function colorCycle(page, label, key)
-	local r = row(page)
-	rowLabel(r, label, 120)
-	local pill = new("TextLabel", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -8, 0.5, 0),
-		Size = UDim2.fromOffset(100, 24),
-		Font = Enum.Font.GothamBold,
-		TextSize = 11,
-		TextColor3 = Color3.fromRGB(15, 15, 20),
-	}, r)
-	corner(pill, 12)
-	local function refresh()
-		pill.Text = COLORS[S[key]][1]
-		pill.BackgroundColor3 = COLORS[S[key]][2]
-	end
-	r.MouseButton1Click:Connect(function()
-		S[key] = (S[key] % #COLORS) + 1
-		refresh()
-	end)
-	refresh()
-end
-
-local function actionButton(page, text, color, onClick)
-	local b = new("TextButton", {
-		Size = UDim2.new(1, 0, 0, 40),
-		BackgroundColor3 = color,
-		Text = text,
-		Font = Enum.Font.GothamBold,
-		TextSize = 13,
-		TextColor3 = WHITE,
-		LayoutOrder = nextOrder(),
-	}, page)
-	corner(b, 10)
-	b.MouseButton1Click:Connect(onClick)
-	return b
-end
-
-local function statusCard(page, text)
-	local l = new("TextLabel", {
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundColor3 = C.card,
-		Text = text,
-		Font = Enum.Font.GothamMedium,
-		TextSize = 12,
-		TextWrapped = true,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.text,
-		LayoutOrder = nextOrder(),
-	}, page)
-	corner(l, 10)
-	new("UIPadding", {
-		PaddingTop = UDim.new(0, 9), PaddingBottom = UDim.new(0, 9),
-		PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12),
-	}, l)
-	return l
-end
-
-local function infoLabel(page, text)
-	local l = new("TextLabel", {
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundTransparency = 1,
-		Text = text,
-		Font = Enum.Font.GothamMedium,
-		TextSize = 11,
-		TextWrapped = true,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = C.sub,
-		LayoutOrder = nextOrder(),
-	}, page)
-	new("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4) }, l)
-	return l
-end
-
-local function textInput(page, placeholder, onSubmit)
-	local box = new("TextBox", {
-		Size = UDim2.new(1, 0, 0, 38),
-		BackgroundColor3 = C.card,
-		TextColor3 = C.text,
-		PlaceholderText = placeholder,
-		PlaceholderColor3 = C.sub,
-		Text = "",
-		ClearTextOnFocus = false,
-		Font = Enum.Font.GothamMedium,
-		TextSize = 13,
-		LayoutOrder = nextOrder(),
-	}, page)
-	corner(box, 10)
-	outline(box, C.accent, 1, 0.7)
-	box.FocusLost:Connect(function() onSubmit(box.Text) end)
-	return box
-end
-
-local function meters(v) return v .. "m" end
+	spawnStatus.Text = "Respawn di spawn point tersimpan."
+end)
