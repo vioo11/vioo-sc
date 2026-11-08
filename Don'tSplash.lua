@@ -1,4 +1,4 @@
---// Toolkit v4 (Spawn Point + ESP Player + ESP Monster + Visual) - untuk place Studio milikmu sendiri
+--// Toolkit v5 (Spawn + ESP Manusia/Monster/Item + Visual) - untuk place Studio milikmu sendiri
 --// LocalScript -> StarterPlayer > StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -16,22 +16,33 @@ local S = {
 	-- spawn
 	AutoSpawn = true,
 	ShowMarker = true,
-	-- player esp
+	-- esp semua (master)
+	EspAll = false,
+	-- esp manusia
 	EspPlayer = false,
 	PName = true,
 	PDist = true,
-	PColor = 1,
+	PColor = 1, -- hijau
 	PLimitOn = false,
 	PLimit = 500,
-	-- monster esp
+	-- esp monster
 	EspMonster = false,
 	MName = true,
 	MDist = true,
-	MColor = 2,
+	MColor = 2, -- merah
 	MRealName = false,
 	MLimitOn = false,
 	MLimit = 500,
 	MonsterFilter = "",
+	-- esp item
+	EspItem = false,
+	IName = true,
+	IDist = true,
+	IColor = 4, -- kuning
+	IRealName = true,
+	ILimitOn = false,
+	ILimit = 300,
+	ItemFilter = "",
 	-- visual
 	NoFog = false,
 	Fullbright = false,
@@ -53,7 +64,10 @@ local COLORS = {
 	{ "Putih", Color3.fromRGB(245, 245, 245) },
 }
 
-local KEYWORDS = { "monster", "enemy", "enemies", "mob", "zombie", "boss", "creature", "musuh", "npc" }
+local MONSTER_WORDS = { "monster", "enemy", "enemies", "mob", "zombie", "boss", "creature", "musuh", "npc" }
+local ITEM_WORDS = { "item", "pickup", "loot", "coin", "key", "ammo", "medkit", "potion", "collect", "weapon", "gem", "chest", "orb" }
+local PICK_WORDS = { "pick", "take", "ambil", "collect", "grab", "loot", "get", "equip" }
+local MAX_ITEMS = 300
 
 local WHITE = Color3.new(1, 1, 1)
 local C = {
@@ -92,6 +106,13 @@ end
 
 local function tween(o, props, t)
 	TweenService:Create(o, TweenInfo.new(t or 0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
+end
+
+local function matchAny(s, words)
+	for _, w in ipairs(words) do
+		if s:find(w, 1, true) then return true end
+	end
+	return false
 end
 
 ----------------------------------------------------------------
@@ -222,15 +243,7 @@ end
 ----------------------------------------------------------------
 local monsters = {}
 local mAdded, mRemoving = nil, nil
-local scanId = 0
-
-local function hasKeyword(s)
-	s = string.lower(s)
-	for _, k in ipairs(KEYWORDS) do
-		if s:find(k, 1, true) then return true end
-	end
-	return false
-end
+local mScanId = 0
 
 local function isMonsterModel(m)
 	if m == player.Character or Players:GetPlayerFromCharacter(m) then return false end
@@ -247,12 +260,12 @@ local function isMonsterModel(m)
 	if m:FindFirstChildOfClass("Humanoid") or m:FindFirstChildOfClass("AnimationController") then
 		return true
 	end
-	if hasKeyword(m.Name) then return true end
+	if matchAny(string.lower(m.Name), MONSTER_WORDS) then return true end
 	local par = m.Parent
-	return par ~= nil and par ~= workspace and hasKeyword(par.Name)
+	return par ~= nil and par ~= workspace and matchAny(string.lower(par.Name), MONSTER_WORDS)
 end
 
-local function tryAdd(inst)
+local function tryAddMonster(inst)
 	local m
 	if inst:IsA("Model") then
 		m = inst
@@ -266,7 +279,7 @@ local function tryAdd(inst)
 end
 
 local function stopMonsterTrack()
-	scanId += 1
+	mScanId += 1
 	if mAdded then mAdded:Disconnect() mAdded = nil end
 	if mRemoving then mRemoving:Disconnect() mRemoving = nil end
 	table.clear(monsters)
@@ -274,16 +287,16 @@ end
 
 local function startMonsterTrack()
 	stopMonsterTrack()
-	local id = scanId
-	mAdded = workspace.DescendantAdded:Connect(tryAdd)
+	local id = mScanId
+	mAdded = workspace.DescendantAdded:Connect(tryAddMonster)
 	mRemoving = workspace.DescendantRemoving:Connect(function(i)
 		if monsters[i] then monsters[i] = nil end
 	end)
 	task.spawn(function()
 		local n = 0
 		for _, d in ipairs(workspace:GetDescendants()) do
-			if id ~= scanId then return end
-			tryAdd(d)
+			if id ~= mScanId then return end
+			tryAddMonster(d)
 			n += 1
 			if n % 400 == 0 then task.wait() end
 		end
@@ -291,38 +304,158 @@ local function startMonsterTrack()
 end
 
 ----------------------------------------------------------------
--- ESP
+-- DETEKSI ITEM
+-- Item = Tool yang tergeletak, ProximityPrompt bertuliskan ambil/pick/take,
+-- atau Part/Model kecil yang namanya mengandung kata item (atau filter nama).
 ----------------------------------------------------------------
-local espObjs = {}
-local monsterCount = 0
-local monsterInfo
+local items = {} -- [key] = {adornee, part, name}
+local itemN = 0
+local iAdded, iRemoving = nil, nil
+local iScanId = 0
 
-local function removeEsp(char)
-	local o = espObjs[char]
+local function itemPart(inst)
+	if inst:IsA("BasePart") then return inst end
+	if inst:IsA("Tool") then
+		return inst:FindFirstChild("Handle") or inst:FindFirstChildWhichIsA("BasePart", true)
+	end
+	if inst:IsA("Model") then
+		return inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart", true)
+	end
+end
+
+local function insideLiving(inst)
+	local a = inst.Parent
+	while a and a ~= workspace do
+		if a:IsA("Model") and (monsters[a] or a:FindFirstChildOfClass("Humanoid")) then
+			return true
+		end
+		a = a.Parent
+	end
+	return false
+end
+
+local function insideTracked(inst)
+	local a = inst.Parent
+	while a and a ~= workspace do
+		if items[a] or a:IsA("Tool") then return true end
+		a = a.Parent
+	end
+	return false
+end
+
+local function tryAddItem(inst)
+	if itemN >= MAX_ITEMS then return end
+	if inst:IsA("Terrain") then return end
+
+	local filter = S.ItemFilter
+	local key, adornee, name
+
+	if inst:IsA("Tool") then
+		if filter ~= "" and not string.lower(inst.Name):find(filter, 1, true) then return end
+		key, adornee, name = inst, itemPart(inst), inst.Name
+
+	elseif inst:IsA("ProximityPrompt") and filter == "" then
+		local txt = string.lower(inst.ActionText .. " " .. inst.ObjectText)
+		if not matchAny(txt, PICK_WORDS) then return end
+		local owner = inst.Parent
+		if owner and owner:IsA("Attachment") then owner = owner.Parent end
+		if not (owner and owner:IsA("BasePart")) then return end
+		local mdl = owner:FindFirstAncestorOfClass("Model")
+		if mdl and mdl ~= workspace and mdl:GetExtentsSize().Magnitude < 30 then
+			key, adornee = mdl, mdl
+		else
+			key, adornee = owner, owner
+		end
+		name = (inst.ObjectText ~= "" and inst.ObjectText) or key.Name
+
+	elseif inst:IsA("BasePart") or inst:IsA("Model") then
+		local nm = string.lower(inst.Name)
+		local ok
+		if filter ~= "" then
+			ok = nm:find(filter, 1, true) ~= nil
+		else
+			ok = matchAny(nm, ITEM_WORDS)
+		end
+		if not ok then return end
+		if inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid") then return end
+		local size = inst:IsA("BasePart") and inst.Size.Magnitude or inst:GetExtentsSize().Magnitude
+		if size > 40 then return end
+		key, adornee, name = inst, inst, inst.Name
+	else
+		return
+	end
+
+	if not key or items[key] then return end
+	if insideLiving(key) or insideTracked(key) then return end
+	local part = adornee and itemPart(adornee)
+	if not part then return end
+
+	items[key] = { adornee = adornee, part = part, name = name }
+	itemN += 1
+end
+
+local function stopItemTrack()
+	iScanId += 1
+	if iAdded then iAdded:Disconnect() iAdded = nil end
+	if iRemoving then iRemoving:Disconnect() iRemoving = nil end
+	table.clear(items)
+	itemN = 0
+end
+
+local function startItemTrack()
+	stopItemTrack()
+	local id = iScanId
+	iAdded = workspace.DescendantAdded:Connect(tryAddItem)
+	iRemoving = workspace.DescendantRemoving:Connect(function(i)
+		if items[i] then
+			items[i] = nil
+			itemN -= 1
+		end
+	end)
+	task.spawn(function()
+		local n = 0
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if id ~= iScanId then return end
+			tryAddItem(d)
+			n += 1
+			if n % 400 == 0 then task.wait() end
+		end
+	end)
+end
+
+----------------------------------------------------------------
+-- ESP (satu mesin untuk manusia, monster, item)
+----------------------------------------------------------------
+local espObjs = {} -- [key] = {hl, bb, label, adornee, part, color}
+local monsterCount, itemCount = 0, 0
+local monsterInfo, itemInfo
+
+local function removeEsp(key)
+	local o = espObjs[key]
 	if o then
 		o.hl:Destroy()
 		o.bb:Destroy()
-		espObjs[char] = nil
+		espObjs[key] = nil
 	end
 end
 
 local function clearEsp()
-	for char in pairs(espObjs) do removeEsp(char) end
+	for key in pairs(espObjs) do removeEsp(key) end
 end
 
-local function makeEsp(char, part)
+local function makeEsp(adornee, part, offset)
 	local hl = new("Highlight", {
 		Name = "TKESP",
 		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
 		FillTransparency = 0.6,
 		OutlineTransparency = 0,
-		Adornee = char,
-	}, char)
+		Adornee = adornee,
+	}, adornee)
 
 	local bb = new("BillboardGui", {
 		Name = "TKTag",
-		Size = UDim2.fromOffset(160, 18),
-		StudsOffset = Vector3.new(0, 3, 0),
+		Size = UDim2.fromOffset(170, 18),
+		StudsOffset = Vector3.new(0, offset, 0),
 		AlwaysOnTop = true,
 		Adornee = part,
 	}, part)
@@ -335,7 +468,7 @@ local function makeEsp(char, part)
 		TextStrokeTransparency = 0.3,
 	}, bb)
 
-	return { hl = hl, bb = bb, label = label }
+	return { hl = hl, bb = bb, label = label, adornee = adornee, part = part }
 end
 
 local function pickPart(char)
@@ -347,26 +480,26 @@ end
 
 local seen = {}
 
-local function updateOne(char, name, color, showName, showDist, limitOn, limit, root, camPos)
-	local hum = char:FindFirstChildOfClass("Humanoid")
+local function updateOne(key, adornee, part, name, color, showName, showDist, limitOn, limit, offset, root, camPos)
+	if not part or not part.Parent then return end
+	local hum = key:FindFirstChildOfClass("Humanoid")
 	if hum and hum.Health <= 0 then return end
-	local part = pickPart(char)
-	if not part then return end
 
 	local origin = root and root.Position or camPos
 	local dist = (part.Position - origin).Magnitude
 	if limitOn and dist > limit then return end
 
-	seen[char] = true
+	seen[key] = true
 
-	local o = espObjs[char]
-	if o and (o.hl.Parent ~= char or o.bb.Parent ~= part) then
-		removeEsp(char)
+	local o = espObjs[key]
+	if o and (o.adornee ~= adornee or o.part ~= part
+		or o.hl.Parent ~= adornee or o.bb.Parent ~= part) then
+		removeEsp(key)
 		o = nil
 	end
 	if not o then
-		o = makeEsp(char, part)
-		espObjs[char] = o
+		o = makeEsp(adornee, part, offset)
+		espObjs[key] = o
 	end
 
 	if o.color ~= color then
@@ -394,7 +527,7 @@ RunService.Heartbeat:Connect(function(dt)
 	if espTimer < 0.2 then return end
 	espTimer = 0
 
-	if not (S.EspPlayer or S.EspMonster) then
+	if not (S.EspPlayer or S.EspMonster or S.EspItem) then
 		if next(espObjs) then clearEsp() end
 		return
 	end
@@ -403,16 +536,19 @@ RunService.Heartbeat:Connect(function(dt)
 	local camPos = workspace.CurrentCamera.CFrame.Position
 	table.clear(seen)
 
+	-- manusia
 	if S.EspPlayer then
 		local col = COLORS[S.PColor][2]
 		for _, plr in ipairs(Players:GetPlayers()) do
-			if plr ~= player and plr.Character then
-				updateOne(plr.Character, plr.Name, col, S.PName, S.PDist,
-					S.PLimitOn, S.PLimit, root, camPos)
+			local char = plr.Character
+			if plr ~= player and char then
+				updateOne(char, char, pickPart(char), plr.Name, col,
+					S.PName, S.PDist, S.PLimitOn, S.PLimit, 3, root, camPos)
 			end
 		end
 	end
 
+	-- monster
 	if S.EspMonster then
 		local col = COLORS[S.MColor][2]
 		local n = 0
@@ -421,22 +557,45 @@ RunService.Heartbeat:Connect(function(dt)
 				monsters[model] = nil
 			else
 				n += 1
-				updateOne(model, S.MRealName and model.Name or "Monster", col,
-					S.MName, S.MDist, S.MLimitOn, S.MLimit, root, camPos)
+				updateOne(model, model, pickPart(model), S.MRealName and model.Name or "Monster", col,
+					S.MName, S.MDist, S.MLimitOn, S.MLimit, 3, root, camPos)
 			end
 		end
 		monsterCount = n
 	end
 
-	for char in pairs(espObjs) do
-		if not seen[char] then removeEsp(char) end
+	-- item
+	if S.EspItem then
+		local col = COLORS[S.IColor][2]
+		local n = 0
+		for key, info in pairs(items) do
+			if not key:IsDescendantOf(workspace) then
+				items[key] = nil
+				itemN -= 1
+			elseif not insideLiving(key) then -- sudah dipungut / dipegang -> sembunyikan
+				n += 1
+				updateOne(key, info.adornee, info.part, S.IRealName and info.name or "Item", col,
+					S.IName, S.IDist, S.ILimitOn, S.ILimit, 2, root, camPos)
+			end
+		end
+		itemCount = n
+	end
+
+	for key in pairs(espObjs) do
+		if not seen[key] then removeEsp(key) end
 	end
 
 	infoTimer += 0.2
-	if infoTimer >= 1 and monsterInfo then
+	if infoTimer >= 1 then
 		infoTimer = 0
-		local t = S.EspMonster and ("Monster terdeteksi: " .. monsterCount) or "ESP Monster belum aktif."
-		if monsterInfo.Text ~= t then monsterInfo.Text = t end
+		if monsterInfo then
+			local t = S.EspMonster and ("Monster terdeteksi: " .. monsterCount) or "ESP Monster belum aktif."
+			if monsterInfo.Text ~= t then monsterInfo.Text = t end
+		end
+		if itemInfo then
+			local t = S.EspItem and ("Item terdeteksi: " .. itemCount) or "ESP Item belum aktif."
+			if itemInfo.Text ~= t then itemInfo.Text = t end
+		end
 	end
 end)
 
@@ -463,7 +622,6 @@ corner(main, 16)
 local mainStroke = outline(main, C.accent, 1.5, 0.35)
 local uiScale = new("UIScale", { Scale = S.UiScale }, main)
 
--- Header
 local header = new("Frame", {
 	Size = UDim2.new(1, 0, 0, 40),
 	BackgroundTransparency = 1,
@@ -517,11 +675,8 @@ local line = new("Frame", {
 	BorderSizePixel = 0,
 }, main)
 corner(line, 1)
-new("UIGradient", {
-	Color = ColorSequence.new(C.accent, C.accent2),
-}, line)
+new("UIGradient", { Color = ColorSequence.new(C.accent, C.accent2) }, line)
 
--- Tombol buka kembali
 local reopen = new("TextButton", {
 	Size = UDim2.fromOffset(42, 42),
 	Position = UDim2.new(1, -54, 0.5, -21),
@@ -542,7 +697,7 @@ end
 closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
 reopen.MouseButton1Click:Connect(function() setOpen(true) end)
 
--- Geser lewat header (nonaktif saat terkunci)
+-- geser lewat header (nonaktif saat terkunci)
 do
 	local dragging, dragStart, startPos = false, nil, nil
 	header.InputBegan:Connect(function(input)
@@ -653,8 +808,7 @@ local function newPage(name, icon, title)
 end
 
 local pageSpawn = newPage("SPAWN", "📍", "Titik spawn")
-local pagePlayer = newPage("PLAYER", "👤", "ESP Player")
-local pageMonster = newPage("MONSTER", "👹", "ESP Monster")
+local pageEsp = newPage("ESP", "👁", "ESP · Manusia, Monster, Item")
 local pageVisual = newPage("VISUAL", "🌤", "Tampilan dunia")
 local pageSet = newPage("SETELAN", "⚙", "Pengaturan")
 
@@ -693,6 +847,61 @@ local function section(page, text)
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = C.sub,
 	}, f)
+end
+
+-- grup yang bisa dilipat
+local function group(page, title, color)
+	local hdr = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, 36),
+		BackgroundColor3 = C.card,
+		AutoButtonColor = false,
+		Text = "",
+		LayoutOrder = nextOrder(),
+	}, page)
+	corner(hdr, 10)
+	outline(hdr, color, 1, 0.6)
+	local bar = new("Frame", {
+		Size = UDim2.fromOffset(4, 18),
+		Position = UDim2.new(0, 8, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		BackgroundColor3 = color,
+		BorderSizePixel = 0,
+	}, hdr)
+	corner(bar, 2)
+	new("TextLabel", {
+		Size = UDim2.new(1, -60, 1, 0),
+		Position = UDim2.fromOffset(20, 0),
+		BackgroundTransparency = 1,
+		Text = title,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = color,
+	}, hdr)
+	local arrow = new("TextLabel", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -10, 0.5, 0),
+		Size = UDim2.fromOffset(20, 20),
+		BackgroundTransparency = 1,
+		Text = "▼",
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		TextColor3 = C.sub,
+	}, hdr)
+
+	local body = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = nextOrder(),
+	}, page)
+	new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, body)
+
+	hdr.MouseButton1Click:Connect(function()
+		body.Visible = not body.Visible
+		arrow.Text = body.Visible and "▼" or "▶"
+	end)
+	return body
 end
 
 local function row(page, height)
@@ -918,6 +1127,8 @@ local function textInput(page, placeholder, onSubmit)
 end
 
 local function meters(v) return v .. "m" end
+local function trim(s) return string.lower(s:match("^%s*(.-)%s*$")) end
+
 ----------------------------------------------------------------
 -- ISI: SPAWN
 ----------------------------------------------------------------
@@ -962,43 +1173,58 @@ toggle(pageSpawn, "Tampilkan penanda", "ShowMarker", function()
 end)
 
 ----------------------------------------------------------------
--- ISI: PLAYER
+-- ISI: ESP (satu menu, tiga grup)
 ----------------------------------------------------------------
-section(pagePlayer, "Utama")
-toggle(pagePlayer, "ESP Player", "EspPlayer")
-section(pagePlayer, "Tampilan")
-toggle(pagePlayer, "Tampilkan nama", "PName")
-toggle(pagePlayer, "Tampilkan jarak", "PDist")
-colorCycle(pagePlayer, "Warna", "PColor")
-section(pagePlayer, "Batas jarak")
-toggle(pagePlayer, "Aktifkan batas", "PLimitOn")
-stepper(pagePlayer, "Jarak maksimal", "PLimit", 50, 50, 2000, nil, meters)
+toggle(pageEsp, "ESP Semua (master)", "EspAll", function()
+	for _, k in ipairs({ "EspPlayer", "EspMonster", "EspItem" }) do
+		if setters[k] then setters[k](S.EspAll) end
+	end
+end)
 
-----------------------------------------------------------------
--- ISI: MONSTER
-----------------------------------------------------------------
-section(pageMonster, "Utama")
-toggle(pageMonster, "ESP Monster", "EspMonster", function()
+-- 👤 MANUSIA
+local gPlayer = group(pageEsp, "👤  MANUSIA", COLORS[1][2])
+toggle(gPlayer, "ESP Manusia", "EspPlayer")
+toggle(gPlayer, "Tampilkan nama", "PName")
+toggle(gPlayer, "Tampilkan jarak", "PDist")
+colorCycle(gPlayer, "Warna", "PColor")
+toggle(gPlayer, "Batas jarak", "PLimitOn")
+stepper(gPlayer, "Jarak maksimal", "PLimit", 50, 50, 2000, nil, meters)
+
+-- 👹 MONSTER
+local gMonster = group(pageEsp, "👹  MONSTER", COLORS[2][2])
+toggle(gMonster, "ESP Monster", "EspMonster", function()
 	if S.EspMonster then startMonsterTrack() else stopMonsterTrack() end
 end)
-monsterInfo = statusCard(pageMonster, "ESP Monster belum aktif.")
-
-section(pageMonster, "Tampilan")
-toggle(pageMonster, "Tampilkan nama", "MName")
-toggle(pageMonster, "Tampilkan jarak", "MDist")
-toggle(pageMonster, "Pakai nama asli model", "MRealName")
-colorCycle(pageMonster, "Warna", "MColor")
-
-section(pageMonster, "Batas jarak")
-toggle(pageMonster, "Aktifkan batas", "MLimitOn")
-stepper(pageMonster, "Jarak maksimal", "MLimit", 50, 50, 2000, nil, meters)
-
-section(pageMonster, "Deteksi")
-textInput(pageMonster, "Filter nama, contoh: zombie", function(text)
-	S.MonsterFilter = string.lower(text:match("^%s*(.-)%s*$"))
+monsterInfo = statusCard(gMonster, "ESP Monster belum aktif.")
+toggle(gMonster, "Tampilkan nama", "MName")
+toggle(gMonster, "Tampilkan jarak", "MDist")
+toggle(gMonster, "Pakai nama asli model", "MRealName")
+colorCycle(gMonster, "Warna", "MColor")
+toggle(gMonster, "Batas jarak", "MLimitOn")
+stepper(gMonster, "Jarak maksimal", "MLimit", 50, 50, 2000, nil, meters)
+textInput(gMonster, "Filter nama monster, contoh: zombie", function(text)
+	S.MonsterFilter = trim(text)
 	if S.EspMonster then startMonsterTrack() end
 end)
-infoLabel(pageMonster, "Kosong = otomatis (punya Humanoid / AnimationController, atau nama berisi monster, enemy, mob, zombie, boss, npc). Diisi = hanya model dengan nama itu.")
+infoLabel(gMonster, "Filter kosong = otomatis (punya Humanoid / AnimationController, atau nama berisi monster, enemy, mob, zombie, boss, npc).")
+
+-- 🎒 ITEM
+local gItem = group(pageEsp, "🎒  ITEM", COLORS[4][2])
+toggle(gItem, "ESP Item", "EspItem", function()
+	if S.EspItem then startItemTrack() else stopItemTrack() end
+end)
+itemInfo = statusCard(gItem, "ESP Item belum aktif.")
+toggle(gItem, "Tampilkan nama", "IName")
+toggle(gItem, "Tampilkan jarak", "IDist")
+toggle(gItem, "Pakai nama asli item", "IRealName")
+colorCycle(gItem, "Warna", "IColor")
+toggle(gItem, "Batas jarak", "ILimitOn")
+stepper(gItem, "Jarak maksimal", "ILimit", 50, 50, 2000, nil, meters)
+textInput(gItem, "Filter nama item, contoh: key", function(text)
+	S.ItemFilter = trim(text)
+	if S.EspItem then startItemTrack() end
+end)
+infoLabel(gItem, "Otomatis: Tool yang tergeletak, objek dengan tombol ambil/pick/take, dan Part/Model kecil bernama item, loot, coin, key, ammo, dll. Maksimal 300 item.")
 
 ----------------------------------------------------------------
 -- ISI: VISUAL
@@ -1039,11 +1265,11 @@ cycle(pageSet, "Gaya sorotan", "Style", {
 
 section(pageSet, "Darurat")
 actionButton(pageSet, "⛔  Matikan semua fitur", C.danger, function()
-	for _, k in ipairs({ "EspPlayer", "EspMonster", "NoFog", "Fullbright", "CustomFov" }) do
+	for _, k in ipairs({ "EspAll", "EspPlayer", "EspMonster", "EspItem", "NoFog", "Fullbright", "CustomFov" }) do
 		if setters[k] then setters[k](false) end
 	end
 end)
-infoLabel(pageSet, "Toolkit v4 · tombol ✕ menutup menu, tombol ≡ membukanya lagi.")
+infoLabel(pageSet, "Toolkit v5 · tombol ✕ menutup menu, tombol ≡ membukanya lagi.")
 
 refreshLock()
 setTab("SPAWN")
