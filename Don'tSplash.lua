@@ -1,4 +1,4 @@
---// Toolkit v6 (Spawn + ESP Manusia/Monster/Item + Visual) - untuk place Studio milikmu sendiri
+--// Toolkit v6.1 (Spawn + ESP Manusia/Monster/Item + Visual) - untuk place Studio milikmu sendiri
 --// LocalScript -> StarterPlayer > StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -47,6 +47,8 @@ local S = {
 	ILimit = 300,
 	ItemFilter = "",
 	ItemMode = "auto", -- auto / small / learned
+	ItemMerge = true,  -- gabung item berdekatan jadi satu ESP
+	ItemMergeDist = 8, -- jarak gabung (stud)
 	-- visual
 	NoFog = false,
 	Fullbright = false,
@@ -77,6 +79,7 @@ local ITEM_WORDS = {
 local PICK_WORDS = { "pick", "take", "ambil", "collect", "grab", "loot", "get", "equip" }
 local MAX_ITEMS = 300
 local MAX_LINES = 80
+local PROXY_NAME = "TKClusterProxy"
 
 local WHITE = Color3.new(1, 1, 1)
 local C = {
@@ -127,8 +130,6 @@ local function matchAny(s, words)
 end
 
 local function trim(s) return string.lower(s:match("^%s*(.-)%s*$")) end
-
-local toast = function() end -- diisi setelah GUI dibuat
 
 ----------------------------------------------------------------
 -- SPAWN POINT
@@ -320,14 +321,12 @@ end
 
 ----------------------------------------------------------------
 -- DETEKSI ITEM
--- Mode otomatis: Tool tergeletak, ProximityPrompt "ambil", nama berisi kata item,
--- dan Part berbentuk BOLA. Item yang "diajari" (nama+bentuk+ukuran) selalu ikut.
 ----------------------------------------------------------------
 local items = {} -- [key] = {adornee, part, name}
 local itemN = 0
 local iAdded, iRemoving = nil, nil
 local iScanId = 0
-local learned = {} -- [signature] = nama
+local learned = {}
 local learnedCount = 0
 
 local function sigOf(p)
@@ -369,7 +368,7 @@ end
 
 local function tryAddItem(inst)
 	if itemN >= MAX_ITEMS then return end
-	if inst:IsA("Terrain") or inst.Name == "SpawnPointMarker" then return end
+	if inst:IsA("Terrain") or inst.Name == "SpawnPointMarker" or inst.Name == PROXY_NAME then return end
 
 	local filter = S.ItemFilter
 	local key, adornee, name
@@ -404,7 +403,7 @@ local function tryAddItem(inst)
 		if isPart and learned[sigOf(inst)] then
 			ok = true
 		elseif isPart and inst.Transparency >= 0.95 then
-			ok = false -- objek tak terlihat (trigger, dll)
+			ok = false
 		elseif filter ~= "" then
 			ok = nm:find(filter, 1, true) ~= nil
 		elseif S.ItemMode == "auto" then
@@ -457,13 +456,13 @@ local function startItemTrack()
 	end)
 end
 
--- daftar Part terdekat (untuk "ajari" dan "cek objek sekitar")
 local function nearestParts(maxSize, maxDist)
 	local root = getRoot()
 	local origin = root and root.Position or workspace.CurrentCamera.CFrame.Position
 	local list, n = {}, 0
 	for _, d in ipairs(workspace:GetDescendants()) do
-		if d:IsA("BasePart") and not d:IsA("Terrain") and d.Name ~= "SpawnPointMarker"
+		if d:IsA("BasePart") and not d:IsA("Terrain")
+			and d.Name ~= "SpawnPointMarker" and d.Name ~= PROXY_NAME
 			and d.Size.Magnitude <= maxSize
 			and not (player.Character and d:IsDescendantOf(player.Character))
 			and not insideLiving(d) then
@@ -483,10 +482,10 @@ local function describe(p)
 end
 
 ----------------------------------------------------------------
--- ESP (satu mesin untuk manusia, monster, item)
+-- ESP (manusia, monster, item)
 ----------------------------------------------------------------
 local espObjs = {} -- [key] = {hl, bb, label, adornee, part, color, tracer}
-local pCount, mCount, iCount = 0, 0, 0
+local pCount, mCount, iCount, gCount = 0, 0, 0, 0
 local chipP, chipM, chipI
 local monsterInfo, itemInfo
 
@@ -540,7 +539,6 @@ end
 
 local seen = {}
 
--- cfg: color, showName, showDist, limitOn, limit, offset, tracer
 local function updateOne(key, adornee, part, text, cfg, root, camPos)
 	if not part or not part.Parent then return false end
 	local hum = key:FindFirstChildOfClass("Humanoid")
@@ -584,6 +582,126 @@ local function updateOne(key, adornee, part, text, cfg, root, camPos)
 	return true
 end
 
+----------------------------------------------------------------
+-- ESP GABUNGAN UNTUK ITEM BERDEKATAN (satu kotak + satu label)
+----------------------------------------------------------------
+local clusterPool = {}
+
+local function getCluster(i)
+	local v = clusterPool[i]
+	if v then return v end
+	local part = new("Part", {
+		Name = PROXY_NAME,
+		Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+		CastShadow = false, Transparency = 1,
+		Size = Vector3.new(1, 1, 1),
+	}, workspace)
+	local box = new("SelectionBox", {
+		LineThickness = 0.04,
+		SurfaceTransparency = 1,
+	}, part)
+	local fill = new("BoxHandleAdornment", {
+		AlwaysOnTop = true, ZIndex = 1, Transparency = 0.75,
+		Size = Vector3.new(1, 1, 1),
+	}, part)
+	local bb = new("BillboardGui", {
+		Size = UDim2.fromOffset(180, 18),
+		AlwaysOnTop = true,
+		Adornee = part,
+		Enabled = false,
+	}, part)
+	local label = new("TextLabel", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		TextStrokeTransparency = 0.3,
+	}, bb)
+	v = { part = part, box = box, fill = fill, bb = bb, label = label, active = false }
+	clusterPool[i] = v
+	return v
+end
+
+local function hidePool(from)
+	for i = from, #clusterPool do
+		local v = clusterPool[i]
+		if v and v.active then
+			v.active = false
+			v.box.Adornee = nil
+			v.fill.Adornee = nil
+			v.bb.Enabled = false
+		end
+	end
+end
+
+local function updateCluster(g, idx, cfg, root, camPos)
+	local minV, maxV
+	local sameName, firstName = true, g[1].info.name
+	for _, e in ipairs(g) do
+		local p = e.info.part
+		local half = math.max(p.Size.X, p.Size.Y, p.Size.Z) / 2
+		local lo = p.Position - Vector3.one * half
+		local hi = p.Position + Vector3.one * half
+		minV = minV and minV:Min(lo) or lo
+		maxV = maxV and maxV:Max(hi) or hi
+		if e.info.name ~= firstName then sameName = false end
+	end
+
+	local center = (minV + maxV) / 2
+	local size = (maxV - minV) + Vector3.one * 0.6
+	local origin = root and root.Position or camPos
+	local dist = (center - origin).Magnitude
+	if cfg.limitOn and dist > cfg.limit then return false end
+
+	local v = getCluster(idx)
+	v.active = true
+	v.part.Size = size
+	v.part.CFrame = CFrame.new(center)
+
+	v.box.Adornee = v.part
+	v.box.Color3 = cfg.color
+	v.fill.Adornee = v.part
+	v.fill.Size = size
+	v.fill.Color3 = cfg.color
+	v.fill.Visible = (S.Style == "fill")
+
+	v.color = cfg.color
+	v.tracer = cfg.tracer
+	v.label.TextColor3 = cfg.color
+	v.bb.StudsOffset = Vector3.new(0, size.Y / 2 + 1.5, 0)
+	v.bb.Enabled = cfg.showName or cfg.showDist
+
+	local base = (S.IRealName and sameName) and firstName or "Item"
+	local t = cfg.showName and (base .. " ×" .. #g) or ("×" .. #g)
+	if cfg.showDist then t = t .. " [" .. math.floor(dist) .. "m]" end
+	if v.label.Text ~= t then v.label.Text = t end
+	return true
+end
+
+-- kelompokkan item: anggota harus dekat dengan item pertama (seed)
+local function clusterItems(list, radius)
+	local r2 = radius * radius
+	local used, clusters = {}, {}
+	for i = 1, #list do
+		if not used[i] then
+			used[i] = true
+			local g = { list[i] }
+			local sp = list[i].pos
+			for j = i + 1, #list do
+				if not used[j] then
+					local d = list[j].pos - sp
+					if d:Dot(d) <= r2 then
+						used[j] = true
+						g[#g + 1] = list[j]
+					end
+				end
+			end
+			clusters[#clusters + 1] = g
+		end
+	end
+	return clusters
+end
+
 local cfgP = { offset = 3 }
 local cfgM = { offset = 3 }
 local cfgI = { offset = 2 }
@@ -596,14 +714,15 @@ RunService.Heartbeat:Connect(function(dt)
 
 	if not (S.EspPlayer or S.EspMonster or S.EspItem) then
 		if next(espObjs) then clearEsp() end
-		pCount, mCount, iCount = 0, 0, 0
+		hidePool(1)
+		pCount, mCount, iCount, gCount = 0, 0, 0, 0
 		return
 	end
 
 	local root = getRoot()
 	local camPos = workspace.CurrentCamera.CFrame.Position
 	table.clear(seen)
-	pCount, mCount, iCount = 0, 0, 0
+	pCount, mCount, iCount, gCount = 0, 0, 0, 0
 
 	if S.EspPlayer then
 		cfgP.color = COLORS[S.PColor][2]
@@ -637,17 +756,45 @@ RunService.Heartbeat:Connect(function(dt)
 		cfgI.color = COLORS[S.IColor][2]
 		cfgI.showName, cfgI.showDist = S.IName, S.IDist
 		cfgI.limitOn, cfgI.limit, cfgI.tracer = S.ILimitOn, S.ILimit, S.ITracer
+
+		local list = {}
 		for key, info in pairs(items) do
 			if not key:IsDescendantOf(workspace) then
 				items[key] = nil
 				itemN -= 1
-			elseif not insideLiving(key) then -- sudah dipungut -> sembunyikan
-				if updateOne(key, info.adornee, info.part,
-					S.IRealName and info.name or "Item", cfgI, root, camPos) then
+			elseif info.part.Parent and not insideLiving(key) then
+				list[#list + 1] = { key = key, info = info, pos = info.part.Position }
+			end
+		end
+
+		local groups
+		if S.ItemMerge then
+			groups = clusterItems(list, S.ItemMergeDist)
+		else
+			groups = {}
+			for _, e in ipairs(list) do groups[#groups + 1] = { e } end
+		end
+
+		local poolUsed = 0
+		for _, g in ipairs(groups) do
+			if #g == 1 then
+				local e = g[1]
+				if updateOne(e.key, e.info.adornee, e.info.part,
+					S.IRealName and e.info.name or "Item", cfgI, root, camPos) then
 					iCount += 1
+					gCount += 1
+				end
+			else
+				if updateCluster(g, poolUsed + 1, cfgI, root, camPos) then
+					poolUsed += 1
+					iCount += #g
+					gCount += 1
 				end
 			end
 		end
+		hidePool(poolUsed + 1)
+	else
+		hidePool(1)
 	end
 
 	for key in pairs(espObjs) do
@@ -667,7 +814,8 @@ RunService.Heartbeat:Connect(function(dt)
 			if monsterInfo.Text ~= t then monsterInfo.Text = t end
 		end
 		if itemInfo then
-			local t = S.EspItem and ("Item terdeteksi: " .. iCount .. "   ·   dipelajari: " .. learnedCount)
+			local t = S.EspItem
+				and ("Item: " .. iCount .. "  ·  ESP tampil: " .. gCount .. "  ·  dipelajari: " .. learnedCount)
 				or "ESP Item belum aktif."
 			if itemInfo.Text ~= t then itemInfo.Text = t end
 		end
@@ -699,72 +847,44 @@ local lines = {}
 
 RunService.RenderStepped:Connect(function()
 	local used = 0
-	local any = S.PTracer or S.MTracer or S.ITracer
-	if any and next(espObjs) then
+	if S.PTracer or S.MTracer or S.ITracer then
 		local cam = workspace.CurrentCamera
 		local vp = cam.ViewportSize
 		local from = Vector2.new(vp.X / 2, vp.Y)
-		for _, o in pairs(espObjs) do
-			if o.tracer and o.part and o.part.Parent and used < MAX_LINES then
-				local v, on = cam:WorldToViewportPoint(o.part.Position)
-				if on then
-					used += 1
-					local l = lines[used]
-					if not l then
-						l = new("Frame", {
-							AnchorPoint = Vector2.new(0.5, 0.5),
-							BorderSizePixel = 0,
-						}, tracerHolder)
-						lines[used] = l
-					end
-					local to = Vector2.new(v.X, v.Y)
-					local d = to - from
-					l.Size = UDim2.fromOffset(d.Magnitude, 1.5)
-					l.Position = UDim2.fromOffset((from.X + to.X) / 2, (from.Y + to.Y) / 2)
-					l.Rotation = math.deg(math.atan2(d.Y, d.X))
-					l.BackgroundColor3 = o.color or WHITE
-					l.Visible = true
-				end
+
+		local function draw(part, color)
+			if used >= MAX_LINES or not (part and part.Parent) then return end
+			local v, on = cam:WorldToViewportPoint(part.Position)
+			if not on then return end
+			used += 1
+			local l = lines[used]
+			if not l then
+				l = new("Frame", {
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					BorderSizePixel = 0,
+				}, tracerHolder)
+				lines[used] = l
 			end
+			local to = Vector2.new(v.X, v.Y)
+			local d = to - from
+			l.Size = UDim2.fromOffset(d.Magnitude, 1.5)
+			l.Position = UDim2.fromOffset((from.X + to.X) / 2, (from.Y + to.Y) / 2)
+			l.Rotation = math.deg(math.atan2(d.Y, d.X))
+			l.BackgroundColor3 = color or WHITE
+			l.Visible = true
+		end
+
+		for _, o in pairs(espObjs) do
+			if o.tracer then draw(o.part, o.color) end
+		end
+		for _, v in ipairs(clusterPool) do
+			if v.active and v.tracer then draw(v.part, v.color) end
 		end
 	end
 	for i = used + 1, #lines do
 		if lines[i].Visible then lines[i].Visible = false end
 	end
 end)
-
--- Toast (notifikasi kecil di bawah layar)
-local toastGroup = new("CanvasGroup", {
-	AnchorPoint = Vector2.new(0.5, 1),
-	Position = UDim2.new(0.5, 0, 1, -18),
-	Size = UDim2.fromOffset(280, 34),
-	BackgroundColor3 = C.bg,
-	GroupTransparency = 1,
-	ZIndex = 50,
-}, gui)
-corner(toastGroup, 17)
-local toastStroke = outline(toastGroup, C.accent, 1.5, 0)
-local toastLabel = new("TextLabel", {
-	Size = UDim2.fromScale(1, 1),
-	BackgroundTransparency = 1,
-	Font = Enum.Font.GothamBold,
-	TextSize = 12,
-	TextColor3 = C.text,
-	TextTruncate = Enum.TextTruncate.AtEnd,
-}, toastGroup)
-local toastId = 0
-
-toast = function(text, color)
-	toastId += 1
-	local id = toastId
-	toastLabel.Text = text
-	toastStroke.Color = color or C.accent
-	toastGroup.Position = UDim2.new(0.5, 0, 1, -6)
-	tween(toastGroup, { GroupTransparency = 0, Position = UDim2.new(0.5, 0, 1, -18) }, 0.22)
-	task.delay(2.2, function()
-		if id == toastId then tween(toastGroup, { GroupTransparency = 1 }, 0.3) end
-	end)
-end
 
 ----------------------------------------------------------------
 -- GUI: JENDELA
@@ -795,11 +915,11 @@ local glow = new("UIGradient", {
 	}),
 }, mainStroke)
 
-local root = new("Frame", {
+local rootUi = new("Frame", {
 	Size = UDim2.fromOffset(BASE_W, BASE_H),
 	BackgroundTransparency = 1,
 }, main)
-local uiScale = new("UIScale", { Scale = 1 }, root)
+local uiScale = new("UIScale", { Scale = 1 }, rootUi)
 
 local function applyScale()
 	local vp = workspace.CurrentCamera.ViewportSize
@@ -820,7 +940,7 @@ local header = new("Frame", {
 	Size = UDim2.new(1, 0, 0, 46),
 	BackgroundTransparency = 1,
 	Active = true,
-}, root)
+}, rootUi)
 
 local logo = new("TextLabel", {
 	Size = UDim2.fromOffset(30, 30),
@@ -879,7 +999,7 @@ local divider = new("Frame", {
 	Position = UDim2.fromOffset(12, 46),
 	BackgroundColor3 = WHITE,
 	BorderSizePixel = 0,
-}, root)
+}, rootUi)
 corner(divider, 1)
 new("UIGradient", { Color = ColorSequence.new(C.accent, C.accent2, C.cyan) }, divider)
 
@@ -906,7 +1026,6 @@ local function setOpen(v)
 end
 minBtn.MouseButton1Click:Connect(function() setOpen(false) end)
 
--- geser (window: ikut lock; orb: selalu bisa) + tap
 local function makeDraggable(handle, target, respectLock, onTap)
 	local dragging, dragStart, startPos, moved = false, nil, nil, false
 	handle.InputBegan:Connect(function(input)
@@ -942,7 +1061,7 @@ local sidebar = new("Frame", {
 	Size = UDim2.fromOffset(62, 280),
 	Position = UDim2.fromOffset(8, 54),
 	BackgroundColor3 = C.side,
-}, root)
+}, rootUi)
 corner(sidebar, 14)
 outline(sidebar, C.line, 1, 0.7)
 
@@ -972,7 +1091,7 @@ local content = new("Frame", {
 	Size = UDim2.fromOffset(BASE_W - 86, 280),
 	Position = UDim2.fromOffset(78, 54),
 	BackgroundTransparency = 1,
-}, root)
+}, rootUi)
 
 local pages, tabs = {}, {}
 local tabOrder = 0
@@ -1110,7 +1229,6 @@ local function rowLabel(r, text, rightPad, y, h)
 	}, r)
 end
 
--- grup yang bisa dilipat
 local function group(page, title, color)
 	local hdr = new("TextButton", {
 		Size = UDim2.new(1, 0, 0, 38),
@@ -1188,13 +1306,10 @@ local function toggle(page, label, key, onChange)
 		tween(track, { BackgroundColor3 = on and C.on or C.off })
 		tween(knob, { Position = on and UDim2.new(1, -21, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) })
 	end
-	setters[key] = function(v, silent)
+	setters[key] = function(v)
 		S[key] = v
 		refresh()
 		if onChange then onChange() end
-		if not silent then
-			toast(label .. "  ·  " .. (v and "ON" or "OFF"), v and C.on or C.sub)
-		end
 	end
 	r.MouseButton1Click:Connect(function() setters[key](not S[key]) end)
 	refresh()
@@ -1455,6 +1570,7 @@ local function textInput(page, placeholder, onSubmit)
 end
 
 local function meters(v) return v .. "m" end
+local function studs(v) return v .. " stud" end
 local function percent(v) return math.floor(v * 100 + 0.5) .. "%" end
 
 ----------------------------------------------------------------
@@ -1470,25 +1586,21 @@ actionButton(pageSpawn, "📍  Simpan Spawn Point", C.on, function()
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if not (r and hum and hum.Health > 0) then
 		spawnStatus.Text = "Tidak bisa menyimpan: karakter tidak ada atau sudah mati."
-		toast("Gagal menyimpan spawn", C.danger)
 		return
 	end
 	saved = r.CFrame
 	placeMarker(saved)
 	local p = saved.Position
 	spawnStatus.Text = string.format("Tersimpan di (%d, %d, %d).", p.X, p.Y, p.Z)
-	toast("📍 Spawn point tersimpan", C.on)
 end)
 
 actionButton(pageSpawn, "🚀  Teleport ke Spawn Point", C.accent, function()
 	if not saved then
 		spawnStatus.Text = "Belum ada spawn point."
-		toast("Belum ada spawn point", C.danger)
 		return
 	end
 	if teleportTo(saved + Vector3.new(0, 3, 0)) then
 		spawnStatus.Text = "Teleport ke spawn point."
-		toast("🚀 Teleport berhasil", C.accent)
 	end
 end)
 
@@ -1496,7 +1608,6 @@ actionButton(pageSpawn, "🗑  Hapus Spawn Point", C.danger, function()
 	saved = nil
 	removeMarker()
 	spawnStatus.Text = "Spawn point dihapus. Respawn kembali ke titik bawaan."
-	toast("Spawn point dihapus", C.sub)
 end)
 
 section(pageSpawn, "Opsi")
@@ -1508,7 +1619,6 @@ end)
 ----------------------------------------------------------------
 -- ISI: ESP
 ----------------------------------------------------------------
--- chip jumlah
 local chipRow = new("Frame", {
 	Size = UDim2.new(1, 0, 0, 34),
 	BackgroundTransparency = 1,
@@ -1543,7 +1653,7 @@ chipI = chip("🎒", COLORS[4][2], 3)
 
 toggle(pageEsp, "👁  ESP Semua (master)", "EspAll", function()
 	for _, k in ipairs({ "EspPlayer", "EspMonster", "EspItem" }) do
-		if setters[k] then setters[k](S.EspAll, true) end
+		if setters[k] then setters[k](S.EspAll) end
 	end
 end)
 
@@ -1586,6 +1696,8 @@ toggle(gItem, "ESP Item", "EspItem", function()
 	if S.EspItem then startItemTrack() else stopItemTrack() end
 end)
 itemInfo = statusCard(gItem, "ESP Item belum aktif.")
+toggle(gItem, "Gabung item berdekatan", "ItemMerge")
+slider(gItem, "Jarak gabung", "ItemMergeDist", 2, 30, 1, nil, studs)
 toggle(gItem, "Tampilkan nama", "IName")
 toggle(gItem, "Tampilkan jarak", "IDist")
 toggle(gItem, "Pakai nama asli item", "IRealName")
@@ -1608,11 +1720,12 @@ diagCard.Visible = false
 
 actionButton(gItem, "➕  Ajari item terdekat", C.accent, function()
 	task.spawn(function()
-		toast("Mencari objek terdekat…", C.accent)
 		local list = nearestParts(20, 60)
 		local top = list[1]
 		if not top then
-			toast("Tidak ada objek dekat. Berdirilah dekat item.", C.danger)
+			spawnStatus.Text = "Tidak ada objek dekat untuk diajari."
+			diagCard.Visible = true
+			diagCard.Text = "Tidak ada objek dekat. Berdirilah dekat item lalu coba lagi."
 			return
 		end
 		local sig = sigOf(top.p)
@@ -1621,7 +1734,8 @@ actionButton(gItem, "➕  Ajari item terdekat", C.accent, function()
 			learnedCount += 1
 		end
 		restartItems()
-		toast("Dipelajari: " .. top.p.Name .. "  (" .. math.floor(top.dist) .. "m)", C.on)
+		diagCard.Visible = true
+		diagCard.Text = "Dipelajari: " .. top.p.Name .. " (" .. math.floor(top.dist) .. "m)"
 	end)
 end)
 
@@ -1646,10 +1760,9 @@ actionButton(gItem, "🧹  Lupakan item yang diajari", C.danger, function()
 	table.clear(learned)
 	learnedCount = 0
 	restartItems()
-	toast("Daftar pelajaran dihapus", C.sub)
 end)
 
-infoLabel(gItem, "Otomatis: Tool tergeletak, tombol ambil/pick/take, nama berisi item/loot/coin/key/ball, dan Part berbentuk bola. Item tidak terdeteksi? Berdiri dekat item lalu tekan Ajari. Semua kecil = sorot semua Part kecil (bisa banyak). Maksimal 300 item.")
+infoLabel(gItem, "Item yang berdekatan (dalam Jarak gabung) ditampilkan sebagai satu ESP, contoh: Item ×3. Matikan 'Gabung item berdekatan' kalau mau satu ESP per item.")
 
 ----------------------------------------------------------------
 -- ISI: VISUAL
@@ -1702,15 +1815,13 @@ actionButton(pageSet, "⛔  Matikan semua fitur", C.danger, function()
 		"EspAll", "EspPlayer", "EspMonster", "EspItem",
 		"PTracer", "MTracer", "ITracer", "NoFog", "Fullbright", "CustomFov",
 	}) do
-		if setters[k] then setters[k](false, true) end
+		if setters[k] then setters[k](false) end
 	end
-	toast("Semua fitur dimatikan", C.danger)
 end)
-infoLabel(pageSet, "Toolkit v6 · tombol — menyembunyikan menu jadi bola 👁 yang bisa digeser. Ketuk bola untuk membuka lagi.")
+infoLabel(pageSet, "Toolkit v6.1 · tombol — menyembunyikan menu jadi bola 👁 yang bisa digeser. Ketuk bola untuk membuka lagi.")
 
 refreshLock()
 setTab("ESP")
-toast("Toolkit v6 siap", C.accent)
 
 ----------------------------------------------------------------
 -- RESPAWN -> PINDAH KE SPAWN POINT
