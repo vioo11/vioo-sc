@@ -1,4 +1,4 @@
---// Toolkit v5 (Spawn + ESP Manusia/Monster/Item + Visual) - untuk place Studio milikmu sendiri
+--// Toolkit v6 (Spawn + ESP Manusia/Monster/Item + Visual) - untuk place Studio milikmu sendiri
 --// LocalScript -> StarterPlayer > StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -16,42 +16,47 @@ local S = {
 	-- spawn
 	AutoSpawn = true,
 	ShowMarker = true,
-	-- esp semua (master)
+	-- esp master
 	EspAll = false,
-	-- esp manusia
+	-- manusia
 	EspPlayer = false,
 	PName = true,
 	PDist = true,
-	PColor = 1, -- hijau
+	PTracer = false,
+	PColor = 1,
 	PLimitOn = false,
 	PLimit = 500,
-	-- esp monster
+	-- monster
 	EspMonster = false,
 	MName = true,
 	MDist = true,
-	MColor = 2, -- merah
+	MTracer = false,
+	MColor = 2,
 	MRealName = false,
 	MLimitOn = false,
 	MLimit = 500,
 	MonsterFilter = "",
-	-- esp item
+	-- item
 	EspItem = false,
 	IName = true,
 	IDist = true,
-	IColor = 4, -- kuning
+	ITracer = false,
+	IColor = 4,
 	IRealName = true,
 	ILimitOn = false,
 	ILimit = 300,
 	ItemFilter = "",
+	ItemMode = "auto", -- auto / small / learned
 	-- visual
 	NoFog = false,
 	Fullbright = false,
 	CustomFov = false,
 	Fov = 90,
 	-- umum
-	Style = "Isi",
+	Style = "fill",
 	Locked = false,
 	UiScale = 1,
+	Opacity = 0,
 }
 
 local COLORS = {
@@ -65,26 +70,32 @@ local COLORS = {
 }
 
 local MONSTER_WORDS = { "monster", "enemy", "enemies", "mob", "zombie", "boss", "creature", "musuh", "npc" }
-local ITEM_WORDS = { "item", "pickup", "loot", "coin", "key", "ammo", "medkit", "potion", "collect", "weapon", "gem", "chest", "orb" }
+local ITEM_WORDS = {
+	"item", "pickup", "loot", "coin", "key", "ammo", "medkit", "potion", "collect",
+	"weapon", "gem", "chest", "orb", "ball", "bola", "sphere",
+}
 local PICK_WORDS = { "pick", "take", "ambil", "collect", "grab", "loot", "get", "equip" }
 local MAX_ITEMS = 300
+local MAX_LINES = 80
 
 local WHITE = Color3.new(1, 1, 1)
 local C = {
-	bg = Color3.fromRGB(16, 16, 22),
-	side = Color3.fromRGB(23, 23, 31),
-	card = Color3.fromRGB(31, 31, 42),
-	off = Color3.fromRGB(64, 64, 80),
-	on = Color3.fromRGB(52, 200, 120),
+	bg = Color3.fromRGB(14, 14, 20),
+	side = Color3.fromRGB(21, 21, 29),
+	card = Color3.fromRGB(29, 29, 40),
+	line = Color3.fromRGB(60, 60, 82),
+	off = Color3.fromRGB(62, 62, 78),
+	on = Color3.fromRGB(52, 211, 130),
 	accent = Color3.fromRGB(99, 102, 241),
-	accent2 = Color3.fromRGB(168, 85, 247),
-	danger = Color3.fromRGB(225, 70, 80),
-	text = Color3.fromRGB(240, 240, 250),
-	sub = Color3.fromRGB(140, 140, 162),
+	accent2 = Color3.fromRGB(192, 80, 255),
+	cyan = Color3.fromRGB(56, 189, 248),
+	danger = Color3.fromRGB(239, 68, 90),
+	text = Color3.fromRGB(240, 240, 252),
+	sub = Color3.fromRGB(138, 138, 164),
 }
 
 ----------------------------------------------------------------
--- HELPER UI
+-- HELPER
 ----------------------------------------------------------------
 local function new(class, props, parent)
 	local o = Instance.new(class)
@@ -105,7 +116,7 @@ local function outline(o, color, th, tr)
 end
 
 local function tween(o, props, t)
-	TweenService:Create(o, TweenInfo.new(t or 0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
+	TweenService:Create(o, TweenInfo.new(t or 0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
 end
 
 local function matchAny(s, words)
@@ -114,6 +125,10 @@ local function matchAny(s, words)
 	end
 	return false
 end
+
+local function trim(s) return string.lower(s:match("^%s*(.-)%s*$")) end
+
+local toast = function() end -- diisi setelah GUI dibuat
 
 ----------------------------------------------------------------
 -- SPAWN POINT
@@ -305,13 +320,22 @@ end
 
 ----------------------------------------------------------------
 -- DETEKSI ITEM
--- Item = Tool yang tergeletak, ProximityPrompt bertuliskan ambil/pick/take,
--- atau Part/Model kecil yang namanya mengandung kata item (atau filter nama).
+-- Mode otomatis: Tool tergeletak, ProximityPrompt "ambil", nama berisi kata item,
+-- dan Part berbentuk BOLA. Item yang "diajari" (nama+bentuk+ukuran) selalu ikut.
 ----------------------------------------------------------------
 local items = {} -- [key] = {adornee, part, name}
 local itemN = 0
 local iAdded, iRemoving = nil, nil
 local iScanId = 0
+local learned = {} -- [signature] = nama
+local learnedCount = 0
+
+local function sigOf(p)
+	local shape = p:IsA("Part") and p.Shape.Name or p.ClassName
+	local s = p.Size
+	return string.format("%s|%s|%d|%d|%d", string.lower(p.Name), shape,
+		math.floor(s.X + 0.5), math.floor(s.Y + 0.5), math.floor(s.Z + 0.5))
+end
 
 local function itemPart(inst)
 	if inst:IsA("BasePart") then return inst end
@@ -345,23 +369,24 @@ end
 
 local function tryAddItem(inst)
 	if itemN >= MAX_ITEMS then return end
-	if inst:IsA("Terrain") then return end
+	if inst:IsA("Terrain") or inst.Name == "SpawnPointMarker" then return end
 
 	local filter = S.ItemFilter
 	local key, adornee, name
 
 	if inst:IsA("Tool") then
 		if filter ~= "" and not string.lower(inst.Name):find(filter, 1, true) then return end
-		key, adornee, name = inst, itemPart(inst), inst.Name
+		key, adornee, name = inst, inst, inst.Name
 
-	elseif inst:IsA("ProximityPrompt") and filter == "" then
+	elseif inst:IsA("ProximityPrompt") then
+		if filter ~= "" then return end
 		local txt = string.lower(inst.ActionText .. " " .. inst.ObjectText)
 		if not matchAny(txt, PICK_WORDS) then return end
 		local owner = inst.Parent
 		if owner and owner:IsA("Attachment") then owner = owner.Parent end
 		if not (owner and owner:IsA("BasePart")) then return end
 		local mdl = owner:FindFirstAncestorOfClass("Model")
-		if mdl and mdl ~= workspace and mdl:GetExtentsSize().Magnitude < 30 then
+		if mdl and mdl:GetExtentsSize().Magnitude < 30 then
 			key, adornee = mdl, mdl
 		else
 			key, adornee = owner, owner
@@ -369,17 +394,26 @@ local function tryAddItem(inst)
 		name = (inst.ObjectText ~= "" and inst.ObjectText) or key.Name
 
 	elseif inst:IsA("BasePart") or inst:IsA("Model") then
+		local isPart = inst:IsA("BasePart")
 		local nm = string.lower(inst.Name)
-		local ok
-		if filter ~= "" then
+		local size = isPart and inst.Size.Magnitude or inst:GetExtentsSize().Magnitude
+		if size > 40 then return end
+		if not isPart and inst:FindFirstChildOfClass("Humanoid") then return end
+
+		local ok = false
+		if isPart and learned[sigOf(inst)] then
+			ok = true
+		elseif isPart and inst.Transparency >= 0.95 then
+			ok = false -- objek tak terlihat (trigger, dll)
+		elseif filter ~= "" then
 			ok = nm:find(filter, 1, true) ~= nil
-		else
+		elseif S.ItemMode == "auto" then
 			ok = matchAny(nm, ITEM_WORDS)
+				or (isPart and inst:IsA("Part") and inst.Shape == Enum.PartType.Ball and size <= 20)
+		elseif S.ItemMode == "small" then
+			ok = size <= 8
 		end
 		if not ok then return end
-		if inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid") then return end
-		local size = inst:IsA("BasePart") and inst.Size.Magnitude or inst:GetExtentsSize().Magnitude
-		if size > 40 then return end
 		key, adornee, name = inst, inst, inst.Name
 	else
 		return
@@ -387,7 +421,7 @@ local function tryAddItem(inst)
 
 	if not key or items[key] then return end
 	if insideLiving(key) or insideTracked(key) then return end
-	local part = adornee and itemPart(adornee)
+	local part = itemPart(adornee)
 	if not part then return end
 
 	items[key] = { adornee = adornee, part = part, name = name }
@@ -423,11 +457,37 @@ local function startItemTrack()
 	end)
 end
 
+-- daftar Part terdekat (untuk "ajari" dan "cek objek sekitar")
+local function nearestParts(maxSize, maxDist)
+	local root = getRoot()
+	local origin = root and root.Position or workspace.CurrentCamera.CFrame.Position
+	local list, n = {}, 0
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("BasePart") and not d:IsA("Terrain") and d.Name ~= "SpawnPointMarker"
+			and d.Size.Magnitude <= maxSize
+			and not (player.Character and d:IsDescendantOf(player.Character))
+			and not insideLiving(d) then
+			local dist = (d.Position - origin).Magnitude
+			if dist <= maxDist then list[#list + 1] = { p = d, dist = dist } end
+		end
+		n += 1
+		if n % 800 == 0 then task.wait() end
+	end
+	table.sort(list, function(a, b) return a.dist < b.dist end)
+	return list
+end
+
+local function describe(p)
+	local shape = p:IsA("Part") and p.Shape.Name or p.ClassName
+	return string.format("%s · %s · %.1f×%.1f×%.1f", p.Name, shape, p.Size.X, p.Size.Y, p.Size.Z)
+end
+
 ----------------------------------------------------------------
 -- ESP (satu mesin untuk manusia, monster, item)
 ----------------------------------------------------------------
-local espObjs = {} -- [key] = {hl, bb, label, adornee, part, color}
-local monsterCount, itemCount = 0, 0
+local espObjs = {} -- [key] = {hl, bb, label, adornee, part, color, tracer}
+local pCount, mCount, iCount = 0, 0, 0
+local chipP, chipM, chipI
 local monsterInfo, itemInfo
 
 local function removeEsp(key)
@@ -454,7 +514,7 @@ local function makeEsp(adornee, part, offset)
 
 	local bb = new("BillboardGui", {
 		Name = "TKTag",
-		Size = UDim2.fromOffset(170, 18),
+		Size = UDim2.fromOffset(180, 18),
 		StudsOffset = Vector3.new(0, offset, 0),
 		AlwaysOnTop = true,
 		Adornee = part,
@@ -480,14 +540,15 @@ end
 
 local seen = {}
 
-local function updateOne(key, adornee, part, name, color, showName, showDist, limitOn, limit, offset, root, camPos)
-	if not part or not part.Parent then return end
+-- cfg: color, showName, showDist, limitOn, limit, offset, tracer
+local function updateOne(key, adornee, part, text, cfg, root, camPos)
+	if not part or not part.Parent then return false end
 	local hum = key:FindFirstChildOfClass("Humanoid")
-	if hum and hum.Health <= 0 then return end
+	if hum and hum.Health <= 0 then return false end
 
 	local origin = root and root.Position or camPos
 	local dist = (part.Position - origin).Magnitude
-	if limitOn and dist > limit then return end
+	if cfg.limitOn and dist > cfg.limit then return false end
 
 	seen[key] = true
 
@@ -498,28 +559,34 @@ local function updateOne(key, adornee, part, name, color, showName, showDist, li
 		o = nil
 	end
 	if not o then
-		o = makeEsp(adornee, part, offset)
+		o = makeEsp(adornee, part, cfg.offset)
 		espObjs[key] = o
 	end
 
-	if o.color ~= color then
-		o.color = color
-		o.hl.FillColor = color
-		o.hl.OutlineColor = color
-		o.label.TextColor3 = color
+	if o.color ~= cfg.color then
+		o.color = cfg.color
+		o.hl.FillColor = cfg.color
+		o.hl.OutlineColor = cfg.color
+		o.label.TextColor3 = cfg.color
 	end
+	o.tracer = cfg.tracer
 
-	local fillT = (S.Style == "Isi") and 0.6 or 1
+	local fillT = (S.Style == "fill") and 0.6 or 1
 	if o.hl.FillTransparency ~= fillT then o.hl.FillTransparency = fillT end
 
-	o.bb.Enabled = showName or showDist
+	o.bb.Enabled = cfg.showName or cfg.showDist
 
-	local text = showName and name or ""
-	if showDist then
-		text = (text ~= "" and (text .. " ") or "") .. "[" .. math.floor(dist) .. "m]"
+	local t = cfg.showName and text or ""
+	if cfg.showDist then
+		t = (t ~= "" and (t .. " ") or "") .. "[" .. math.floor(dist) .. "m]"
 	end
-	if o.label.Text ~= text then o.label.Text = text end
+	if o.label.Text ~= t then o.label.Text = t end
+	return true
 end
+
+local cfgP = { offset = 3 }
+local cfgM = { offset = 3 }
+local cfgI = { offset = 2 }
 
 local espTimer, infoTimer = 0, 0
 RunService.Heartbeat:Connect(function(dt)
@@ -529,56 +596,58 @@ RunService.Heartbeat:Connect(function(dt)
 
 	if not (S.EspPlayer or S.EspMonster or S.EspItem) then
 		if next(espObjs) then clearEsp() end
+		pCount, mCount, iCount = 0, 0, 0
 		return
 	end
 
 	local root = getRoot()
 	local camPos = workspace.CurrentCamera.CFrame.Position
 	table.clear(seen)
+	pCount, mCount, iCount = 0, 0, 0
 
-	-- manusia
 	if S.EspPlayer then
-		local col = COLORS[S.PColor][2]
+		cfgP.color = COLORS[S.PColor][2]
+		cfgP.showName, cfgP.showDist = S.PName, S.PDist
+		cfgP.limitOn, cfgP.limit, cfgP.tracer = S.PLimitOn, S.PLimit, S.PTracer
 		for _, plr in ipairs(Players:GetPlayers()) do
 			local char = plr.Character
 			if plr ~= player and char then
-				updateOne(char, char, pickPart(char), plr.Name, col,
-					S.PName, S.PDist, S.PLimitOn, S.PLimit, 3, root, camPos)
+				if updateOne(char, char, pickPart(char), plr.Name, cfgP, root, camPos) then
+					pCount += 1
+				end
 			end
 		end
 	end
 
-	-- monster
 	if S.EspMonster then
-		local col = COLORS[S.MColor][2]
-		local n = 0
+		cfgM.color = COLORS[S.MColor][2]
+		cfgM.showName, cfgM.showDist = S.MName, S.MDist
+		cfgM.limitOn, cfgM.limit, cfgM.tracer = S.MLimitOn, S.MLimit, S.MTracer
 		for model in pairs(monsters) do
 			if not model.Parent then
 				monsters[model] = nil
-			else
-				n += 1
-				updateOne(model, model, pickPart(model), S.MRealName and model.Name or "Monster", col,
-					S.MName, S.MDist, S.MLimitOn, S.MLimit, 3, root, camPos)
+			elseif updateOne(model, model, pickPart(model),
+				S.MRealName and model.Name or "Monster", cfgM, root, camPos) then
+				mCount += 1
 			end
 		end
-		monsterCount = n
 	end
 
-	-- item
 	if S.EspItem then
-		local col = COLORS[S.IColor][2]
-		local n = 0
+		cfgI.color = COLORS[S.IColor][2]
+		cfgI.showName, cfgI.showDist = S.IName, S.IDist
+		cfgI.limitOn, cfgI.limit, cfgI.tracer = S.ILimitOn, S.ILimit, S.ITracer
 		for key, info in pairs(items) do
 			if not key:IsDescendantOf(workspace) then
 				items[key] = nil
 				itemN -= 1
-			elseif not insideLiving(key) then -- sudah dipungut / dipegang -> sembunyikan
-				n += 1
-				updateOne(key, info.adornee, info.part, S.IRealName and info.name or "Item", col,
-					S.IName, S.IDist, S.ILimitOn, S.ILimit, 2, root, camPos)
+			elseif not insideLiving(key) then -- sudah dipungut -> sembunyikan
+				if updateOne(key, info.adornee, info.part,
+					S.IRealName and info.name or "Item", cfgI, root, camPos) then
+					iCount += 1
+				end
 			end
 		end
-		itemCount = n
 	end
 
 	for key in pairs(espObjs) do
@@ -588,12 +657,18 @@ RunService.Heartbeat:Connect(function(dt)
 	infoTimer += 0.2
 	if infoTimer >= 1 then
 		infoTimer = 0
+		if chipP then
+			chipP.Text = "👤  " .. pCount
+			chipM.Text = "👹  " .. mCount
+			chipI.Text = "🎒  " .. iCount
+		end
 		if monsterInfo then
-			local t = S.EspMonster and ("Monster terdeteksi: " .. monsterCount) or "ESP Monster belum aktif."
+			local t = S.EspMonster and ("Monster terdeteksi: " .. mCount) or "ESP Monster belum aktif."
 			if monsterInfo.Text ~= t then monsterInfo.Text = t end
 		end
 		if itemInfo then
-			local t = S.EspItem and ("Item terdeteksi: " .. itemCount) or "ESP Item belum aktif."
+			local t = S.EspItem and ("Item terdeteksi: " .. iCount .. "   ·   dipelajari: " .. learnedCount)
+				or "ESP Item belum aktif."
 			if itemInfo.Text ~= t then itemInfo.Text = t end
 		end
 	end
@@ -604,44 +679,176 @@ Players.PlayerRemoving:Connect(function(plr)
 end)
 
 ----------------------------------------------------------------
--- GUI: WINDOW
+-- GUI: DASAR
 ----------------------------------------------------------------
 local gui = new("ScreenGui", {
 	Name = "ToolkitUI",
 	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, player:WaitForChild("PlayerGui"))
 
+-- Tracer (garis dari bawah layar ke target)
+local tracerHolder = new("Frame", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	Active = false,
+	ZIndex = 0,
+}, gui)
+local lines = {}
+
+RunService.RenderStepped:Connect(function()
+	local used = 0
+	local any = S.PTracer or S.MTracer or S.ITracer
+	if any and next(espObjs) then
+		local cam = workspace.CurrentCamera
+		local vp = cam.ViewportSize
+		local from = Vector2.new(vp.X / 2, vp.Y)
+		for _, o in pairs(espObjs) do
+			if o.tracer and o.part and o.part.Parent and used < MAX_LINES then
+				local v, on = cam:WorldToViewportPoint(o.part.Position)
+				if on then
+					used += 1
+					local l = lines[used]
+					if not l then
+						l = new("Frame", {
+							AnchorPoint = Vector2.new(0.5, 0.5),
+							BorderSizePixel = 0,
+						}, tracerHolder)
+						lines[used] = l
+					end
+					local to = Vector2.new(v.X, v.Y)
+					local d = to - from
+					l.Size = UDim2.fromOffset(d.Magnitude, 1.5)
+					l.Position = UDim2.fromOffset((from.X + to.X) / 2, (from.Y + to.Y) / 2)
+					l.Rotation = math.deg(math.atan2(d.Y, d.X))
+					l.BackgroundColor3 = o.color or WHITE
+					l.Visible = true
+				end
+			end
+		end
+	end
+	for i = used + 1, #lines do
+		if lines[i].Visible then lines[i].Visible = false end
+	end
+end)
+
+-- Toast (notifikasi kecil di bawah layar)
+local toastGroup = new("CanvasGroup", {
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -18),
+	Size = UDim2.fromOffset(280, 34),
+	BackgroundColor3 = C.bg,
+	GroupTransparency = 1,
+	ZIndex = 50,
+}, gui)
+corner(toastGroup, 17)
+local toastStroke = outline(toastGroup, C.accent, 1.5, 0)
+local toastLabel = new("TextLabel", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 12,
+	TextColor3 = C.text,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+}, toastGroup)
+local toastId = 0
+
+toast = function(text, color)
+	toastId += 1
+	local id = toastId
+	toastLabel.Text = text
+	toastStroke.Color = color or C.accent
+	toastGroup.Position = UDim2.new(0.5, 0, 1, -6)
+	tween(toastGroup, { GroupTransparency = 0, Position = UDim2.new(0.5, 0, 1, -18) }, 0.22)
+	task.delay(2.2, function()
+		if id == toastId then tween(toastGroup, { GroupTransparency = 1 }, 0.3) end
+	end)
+end
+
+----------------------------------------------------------------
+-- GUI: JENDELA
+----------------------------------------------------------------
+local BASE_W, BASE_H = 400, 340
+
 local main = new("Frame", {
-	Size = UDim2.fromOffset(360, 330),
-	Position = UDim2.new(1, -372, 0.5, -165),
+	AnchorPoint = Vector2.new(1, 0.5),
+	Position = UDim2.new(1, -12, 0.5, 0),
+	Size = UDim2.fromOffset(BASE_W, BASE_H),
 	BackgroundColor3 = C.bg,
 	BorderSizePixel = 0,
+	ClipsDescendants = true,
 }, gui)
-corner(main, 16)
-local mainStroke = outline(main, C.accent, 1.5, 0.35)
-local uiScale = new("UIScale", { Scale = S.UiScale }, main)
-
-local header = new("Frame", {
-	Size = UDim2.new(1, 0, 0, 40),
-	BackgroundTransparency = 1,
-	Active = true,
+corner(main, 18)
+new("UIGradient", {
+	Color = ColorSequence.new(Color3.fromRGB(26, 24, 40), Color3.fromRGB(12, 12, 18)),
+	Rotation = 90,
 }, main)
 
-new("TextLabel", {
-	Size = UDim2.new(0, 120, 0, 20),
-	Position = UDim2.fromOffset(16, 5),
+local mainStroke = outline(main, WHITE, 2, 0)
+local glow = new("UIGradient", {
+	Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, C.accent),
+		ColorSequenceKeypoint.new(0.35, C.accent2),
+		ColorSequenceKeypoint.new(0.7, C.cyan),
+		ColorSequenceKeypoint.new(1, C.accent),
+	}),
+}, mainStroke)
+
+local root = new("Frame", {
+	Size = UDim2.fromOffset(BASE_W, BASE_H),
+	BackgroundTransparency = 1,
+}, main)
+local uiScale = new("UIScale", { Scale = 1 }, root)
+
+local function applyScale()
+	local vp = workspace.CurrentCamera.ViewportSize
+	local fit = math.clamp(math.min((vp.Y - 30) / BASE_H, (vp.X - 20) / BASE_W), 0.5, 1)
+	local sc = fit * S.UiScale
+	uiScale.Scale = sc
+	main.Size = UDim2.fromOffset(BASE_W * sc, BASE_H * sc)
+end
+workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(applyScale)
+applyScale()
+
+RunService.Heartbeat:Connect(function(dt)
+	if main.Visible then glow.Rotation = (glow.Rotation + dt * 45) % 360 end
+end)
+
+-- Header
+local header = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 46),
+	BackgroundTransparency = 1,
+	Active = true,
+}, root)
+
+local logo = new("TextLabel", {
+	Size = UDim2.fromOffset(30, 30),
+	Position = UDim2.fromOffset(12, 8),
+	BackgroundColor3 = WHITE,
+	Text = "👁",
+	TextSize = 16,
+	Font = Enum.Font.GothamBold,
+	TextColor3 = WHITE,
+}, header)
+corner(logo, 10)
+new("UIGradient", { Color = ColorSequence.new(C.accent, C.accent2), Rotation = 45 }, logo)
+
+local titleL = new("TextLabel", {
+	Size = UDim2.fromOffset(150, 20),
+	Position = UDim2.fromOffset(50, 6),
 	BackgroundTransparency = 1,
 	Text = "TOOLKIT",
 	Font = Enum.Font.GothamBlack,
-	TextSize = 15,
+	TextSize = 16,
 	TextXAlignment = Enum.TextXAlignment.Left,
-	TextColor3 = C.text,
+	TextColor3 = WHITE,
 }, header)
+new("UIGradient", { Color = ColorSequence.new(WHITE, Color3.fromRGB(190, 190, 255)) }, titleL)
 
 local pageTitle = new("TextLabel", {
-	Size = UDim2.new(1, -120, 0, 14),
-	Position = UDim2.fromOffset(16, 23),
+	Size = UDim2.new(1, -170, 0, 14),
+	Position = UDim2.fromOffset(50, 26),
 	BackgroundTransparency = 1,
 	Text = "",
 	Font = Enum.Font.GothamMedium,
@@ -652,95 +859,120 @@ local pageTitle = new("TextLabel", {
 
 local function headerBtn(text, xOff, color)
 	local b = new("TextButton", {
-		Size = UDim2.fromOffset(28, 28),
-		Position = UDim2.new(1, xOff, 0, 6),
+		Size = UDim2.fromOffset(30, 30),
+		Position = UDim2.new(1, xOff, 0, 8),
 		BackgroundColor3 = color,
 		Text = text,
 		Font = Enum.Font.GothamBold,
 		TextSize = 14,
 		TextColor3 = WHITE,
-		AutoButtonColor = true,
 	}, header)
-	corner(b, 8)
+	corner(b, 10)
 	return b
 end
 
-local lockBtn = headerBtn("🔓", -72, C.card)
-local closeBtn = headerBtn("✕", -38, C.danger)
+local lockBtn = headerBtn("🔓", -78, C.card)
+local minBtn = headerBtn("—", -42, C.danger)
 
-local line = new("Frame", {
+local divider = new("Frame", {
 	Size = UDim2.new(1, -24, 0, 2),
-	Position = UDim2.fromOffset(12, 41),
+	Position = UDim2.fromOffset(12, 46),
 	BackgroundColor3 = WHITE,
 	BorderSizePixel = 0,
-}, main)
-corner(line, 1)
-new("UIGradient", { Color = ColorSequence.new(C.accent, C.accent2) }, line)
+}, root)
+corner(divider, 1)
+new("UIGradient", { Color = ColorSequence.new(C.accent, C.accent2, C.cyan) }, divider)
 
-local reopen = new("TextButton", {
-	Size = UDim2.fromOffset(42, 42),
-	Position = UDim2.new(1, -54, 0.5, -21),
-	BackgroundColor3 = C.bg,
-	Text = "≡",
-	Font = Enum.Font.GothamBold,
+-- Orb (tombol melayang saat menu ditutup)
+local orb = new("TextButton", {
+	AnchorPoint = Vector2.new(1, 0.5),
+	Position = UDim2.new(1, -14, 0.5, 0),
+	Size = UDim2.fromOffset(50, 50),
+	BackgroundColor3 = WHITE,
+	Text = "👁",
 	TextSize = 24,
+	Font = Enum.Font.GothamBold,
 	TextColor3 = WHITE,
 	Visible = false,
+	AutoButtonColor = false,
 }, gui)
-corner(reopen, 12)
-outline(reopen, C.accent, 1.5, 0.2)
+corner(orb, 25)
+new("UIGradient", { Color = ColorSequence.new(C.accent, C.accent2), Rotation = 45 }, orb)
+outline(orb, WHITE, 2, 0.5)
 
 local function setOpen(v)
 	main.Visible = v
-	reopen.Visible = not v
+	orb.Visible = not v
 end
-closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
-reopen.MouseButton1Click:Connect(function() setOpen(true) end)
+minBtn.MouseButton1Click:Connect(function() setOpen(false) end)
 
--- geser lewat header (nonaktif saat terkunci)
-do
-	local dragging, dragStart, startPos = false, nil, nil
-	header.InputBegan:Connect(function(input)
-		if S.Locked then return end
-		if input.UserInputType == Enum.UserInputType.Touch
-			or input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			dragStart = input.Position
-			startPos = main.Position
-			input.Changed:Connect(function()
-				if input.UserInputState == Enum.UserInputState.End then dragging = false end
-			end)
-		end
+-- geser (window: ikut lock; orb: selalu bisa) + tap
+local function makeDraggable(handle, target, respectLock, onTap)
+	local dragging, dragStart, startPos, moved = false, nil, nil, false
+	handle.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.Touch
+			and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+		dragging, moved = true, false
+		dragStart = input.Position
+		startPos = target.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+				if onTap and not moved then onTap() end
+			end
+		end)
 	end)
 	UIS.InputChanged:Connect(function(input)
-		if dragging and not S.Locked and (input.UserInputType == Enum.UserInputType.MouseMovement
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
 			or input.UserInputType == Enum.UserInputType.Touch) then
 			local d = input.Position - dragStart
-			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
-				startPos.Y.Scale, startPos.Y.Offset + d.Y)
+			if d.Magnitude > 8 then moved = true end
+			if moved and not (respectLock and S.Locked) then
+				target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+					startPos.Y.Scale, startPos.Y.Offset + d.Y)
+			end
 		end
 	end)
 end
+makeDraggable(header, main, true, nil)
+makeDraggable(orb, orb, false, function() setOpen(true) end)
 
 -- Sidebar
 local sidebar = new("Frame", {
-	Size = UDim2.fromOffset(60, 274),
-	Position = UDim2.fromOffset(8, 48),
+	Size = UDim2.fromOffset(62, 280),
+	Position = UDim2.fromOffset(8, 54),
 	BackgroundColor3 = C.side,
-}, main)
-corner(sidebar, 12)
+}, root)
+corner(sidebar, 14)
+outline(sidebar, C.line, 1, 0.7)
+
+local indicator = new("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Size = UDim2.new(1, -8, 0, 50),
+	Position = UDim2.new(0.5, 0, 0, 5),
+	BackgroundColor3 = WHITE,
+	ZIndex = 1,
+}, sidebar)
+corner(indicator, 11)
+new("UIGradient", { Color = ColorSequence.new(C.accent, C.accent2), Rotation = 60 }, indicator)
+
+local tabHolder = new("Frame", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	ZIndex = 2,
+}, sidebar)
 new("UIListLayout", {
 	Padding = UDim.new(0, 4),
 	SortOrder = Enum.SortOrder.LayoutOrder,
 	HorizontalAlignment = Enum.HorizontalAlignment.Center,
-}, sidebar)
-new("UIPadding", { PaddingTop = UDim.new(0, 5) }, sidebar)
+}, tabHolder)
+new("UIPadding", { PaddingTop = UDim.new(0, 5) }, tabHolder)
 
 local content = new("Frame", {
-	Size = UDim2.new(1, -78, 0, 274),
-	Position = UDim2.fromOffset(74, 48),
+	Size = UDim2.fromOffset(BASE_W - 86, 280),
+	Position = UDim2.fromOffset(78, 54),
 	BackgroundTransparency = 1,
-}, main)
+}, root)
 
 local pages, tabs = {}, {}
 local tabOrder = 0
@@ -749,9 +981,11 @@ local function setTab(name)
 	for n, p in pairs(pages) do
 		local sel = (n == name)
 		p.page.Visible = sel
-		tween(tabs[n].btn, { BackgroundColor3 = sel and C.accent or C.side })
 		tabs[n].name.TextColor3 = sel and WHITE or C.sub
-		if sel then pageTitle.Text = p.title end
+		if sel then
+			pageTitle.Text = p.title
+			tween(indicator, { Position = UDim2.new(0.5, 0, 0, 5 + (tabs[n].idx - 1) * 54) }, 0.22)
+		end
 	end
 end
 
@@ -759,18 +993,17 @@ local function newPage(name, icon, title)
 	tabOrder += 1
 	local btn = new("TextButton", {
 		Size = UDim2.new(1, -8, 0, 50),
-		BackgroundColor3 = C.side,
+		BackgroundTransparency = 1,
 		AutoButtonColor = false,
 		Text = "",
 		LayoutOrder = tabOrder,
-	}, sidebar)
-	corner(btn, 10)
+	}, tabHolder)
 	new("TextLabel", {
 		Size = UDim2.new(1, 0, 0, 26),
 		Position = UDim2.fromOffset(0, 5),
 		BackgroundTransparency = 1,
 		Text = icon,
-		TextSize = 18,
+		TextSize = 19,
 		Font = Enum.Font.GothamBold,
 		TextColor3 = WHITE,
 	}, btn)
@@ -797,12 +1030,12 @@ local function newPage(name, icon, title)
 	new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
 	new("UIPadding", {
 		PaddingRight = UDim.new(0, 8),
-		PaddingBottom = UDim.new(0, 8),
+		PaddingBottom = UDim.new(0, 10),
 		PaddingTop = UDim.new(0, 2),
 	}, page)
 
 	pages[name] = { page = page, title = title }
-	tabs[name] = { btn = btn, name = nameL }
+	tabs[name] = { name = nameL, idx = tabOrder }
 	btn.MouseButton1Click:Connect(function() setTab(name) end)
 	return page
 end
@@ -833,10 +1066,11 @@ local function section(page, text)
 		Size = UDim2.fromOffset(3, 12),
 		Position = UDim2.new(0, 2, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
-		BackgroundColor3 = C.accent,
+		BackgroundColor3 = WHITE,
 		BorderSizePixel = 0,
 	}, f)
 	corner(bar, 2)
+	new("UIGradient", { Color = ColorSequence.new(C.accent, C.accent2), Rotation = 90 }, bar)
 	new("TextLabel", {
 		Size = UDim2.new(1, -14, 1, 0),
 		Position = UDim2.fromOffset(12, 0),
@@ -849,20 +1083,47 @@ local function section(page, text)
 	}, f)
 end
 
--- grup yang bisa dilipat
-local function group(page, title, color)
-	local hdr = new("TextButton", {
-		Size = UDim2.new(1, 0, 0, 36),
+local function row(page, height)
+	local r = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, height or 42),
 		BackgroundColor3 = C.card,
 		AutoButtonColor = false,
 		Text = "",
 		LayoutOrder = nextOrder(),
 	}, page)
-	corner(hdr, 10)
-	outline(hdr, color, 1, 0.6)
+	corner(r, 12)
+	outline(r, C.line, 1, 0.65)
+	return r
+end
+
+local function rowLabel(r, text, rightPad, y, h)
+	return new("TextLabel", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -(rightPad or 64), 0, h or 42),
+		Position = UDim2.fromOffset(12, y or 0),
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextColor3 = C.text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Text = text,
+	}, r)
+end
+
+-- grup yang bisa dilipat
+local function group(page, title, color)
+	local hdr = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, 38),
+		BackgroundColor3 = C.card,
+		AutoButtonColor = false,
+		Text = "",
+		LayoutOrder = nextOrder(),
+	}, page)
+	corner(hdr, 12)
+	outline(hdr, color, 1.2, 0.45)
 	local bar = new("Frame", {
-		Size = UDim2.fromOffset(4, 18),
-		Position = UDim2.new(0, 8, 0.5, 0),
+		Size = UDim2.fromOffset(4, 20),
+		Position = UDim2.new(0, 9, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		BackgroundColor3 = color,
 		BorderSizePixel = 0,
@@ -870,7 +1131,7 @@ local function group(page, title, color)
 	corner(bar, 2)
 	new("TextLabel", {
 		Size = UDim2.new(1, -60, 1, 0),
-		Position = UDim2.fromOffset(20, 0),
+		Position = UDim2.fromOffset(22, 0),
 		BackgroundTransparency = 1,
 		Text = title,
 		Font = Enum.Font.GothamBold,
@@ -904,159 +1165,221 @@ local function group(page, title, color)
 	return body
 end
 
-local function row(page, height)
-	local r = new("TextButton", {
-		Size = UDim2.new(1, 0, 0, height or 40),
-		BackgroundColor3 = C.card,
-		AutoButtonColor = false,
-		Text = "",
-		LayoutOrder = nextOrder(),
-	}, page)
-	corner(r, 10)
-	return r
-end
-
-local function rowLabel(r, text, rightPad)
-	return new("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -(rightPad or 64), 1, 0),
-		Position = UDim2.fromOffset(12, 0),
-		Font = Enum.Font.GothamMedium,
-		TextSize = 13,
-		TextColor3 = C.text,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Text = text,
-	}, r)
-end
-
 local function toggle(page, label, key, onChange)
 	local r = row(page)
-	rowLabel(r, label, 64)
+	rowLabel(r, label, 70)
 	local track = new("Frame", {
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, -10, 0.5, 0),
-		Size = UDim2.fromOffset(40, 22),
+		Size = UDim2.fromOffset(44, 24),
 		BackgroundColor3 = C.off,
 	}, r)
-	corner(track, 11)
+	corner(track, 12)
 	local knob = new("Frame", {
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 3, 0.5, 0),
-		Size = UDim2.fromOffset(16, 16),
+		Size = UDim2.fromOffset(18, 18),
 		BackgroundColor3 = WHITE,
 	}, track)
-	corner(knob, 8)
+	corner(knob, 9)
 
 	local function refresh()
 		local on = S[key]
 		tween(track, { BackgroundColor3 = on and C.on or C.off })
-		tween(knob, { Position = on and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) })
+		tween(knob, { Position = on and UDim2.new(1, -21, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) })
 	end
-	setters[key] = function(v)
+	setters[key] = function(v, silent)
 		S[key] = v
 		refresh()
 		if onChange then onChange() end
+		if not silent then
+			toast(label .. "  ·  " .. (v and "ON" or "OFF"), v and C.on or C.sub)
+		end
 	end
 	r.MouseButton1Click:Connect(function() setters[key](not S[key]) end)
 	refresh()
 end
 
-local function stepper(page, label, key, step, min, max, onChange, fmt)
-	local r = row(page)
-	rowLabel(r, label, 138)
-	local function small(txt, xOff)
-		local b = new("TextButton", {
-			AnchorPoint = Vector2.new(1, 0.5),
-			Position = UDim2.new(1, xOff, 0.5, 0),
-			Size = UDim2.fromOffset(28, 26),
-			BackgroundColor3 = C.off,
-			Text = txt,
-			Font = Enum.Font.GothamBold,
-			TextSize = 15,
-			TextColor3 = WHITE,
-		}, r)
-		corner(b, 8)
-		return b
-	end
-	local plus = small("+", -8)
-	local minus = small("−", -86)
+local function slider(page, label, key, min, max, step, onChange, fmt)
+	local r = row(page, 56)
+	rowLabel(r, label, 100, 2, 28)
 	local val = new("TextLabel", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -36, 0.5, 0),
-		Size = UDim2.fromOffset(46, 26),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -12, 0, 2),
+		Size = UDim2.fromOffset(80, 28),
 		BackgroundTransparency = 1,
 		Font = Enum.Font.GothamBold,
 		TextSize = 12,
-		TextColor3 = C.text,
+		TextColor3 = C.cyan,
+		TextXAlignment = Enum.TextXAlignment.Right,
 	}, r)
-	local function refresh() val.Text = fmt and fmt(S[key]) or tostring(S[key]) end
-	local function change(d)
-		S[key] = math.clamp(math.round((S[key] + d) * 100) / 100, min, max)
-		refresh()
-		if onChange then onChange() end
+	local track = new("Frame", {
+		Size = UDim2.new(1, -28, 0, 6),
+		Position = UDim2.new(0, 14, 0, 38),
+		BackgroundColor3 = C.off,
+		BorderSizePixel = 0,
+	}, r)
+	corner(track, 3)
+	local fill = new("Frame", {
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+	}, track)
+	corner(fill, 3)
+	new("UIGradient", { Color = ColorSequence.new(C.accent, C.accent2) }, fill)
+	local knob = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		Size = UDim2.fromOffset(18, 18),
+		BackgroundColor3 = WHITE,
+		ZIndex = 2,
+	}, track)
+	corner(knob, 9)
+	outline(knob, C.accent, 2, 0)
+
+	local function refresh()
+		local t = (S[key] - min) / (max - min)
+		fill.Size = UDim2.fromScale(t, 1)
+		knob.Position = UDim2.new(t, 0, 0.5, 0)
+		val.Text = fmt and fmt(S[key]) or tostring(S[key])
 	end
-	minus.MouseButton1Click:Connect(function() change(-step) end)
-	plus.MouseButton1Click:Connect(function() change(step) end)
+
+	local hit = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, 34),
+		Position = UDim2.fromOffset(0, 24),
+		BackgroundTransparency = 1,
+		Text = "",
+	}, r)
+
+	local function setFromX(x)
+		local t = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+		local v = min + t * (max - min)
+		v = math.floor(v / step + 0.5) * step
+		v = math.clamp(math.round(v * 100) / 100, min, max)
+		if S[key] ~= v then
+			S[key] = v
+			refresh()
+			if onChange then onChange() end
+		end
+	end
+
+	local dragging = false
+	hit.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch
+			or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			local sc = r:FindFirstAncestorOfClass("ScrollingFrame")
+			if sc then sc.ScrollingEnabled = false end
+			setFromX(input.Position.X)
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+					if sc then sc.ScrollingEnabled = true end
+				end
+			end)
+		end
+	end)
+	UIS.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			setFromX(input.Position.X)
+		end
+	end)
 	refresh()
 end
 
-local function cycle(page, label, key, options, onChange)
-	local r = row(page)
-	rowLabel(r, label, 120)
-	local pill = new("TextLabel", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -8, 0.5, 0),
-		Size = UDim2.fromOffset(100, 24),
-		BackgroundColor3 = C.accent,
-		Font = Enum.Font.GothamBold,
-		TextSize = 11,
-		TextColor3 = WHITE,
+local function segmented(page, label, key, options, onChange)
+	local r = row(page, 70)
+	rowLabel(r, label, 20, 2, 28)
+	local holder = new("Frame", {
+		Size = UDim2.new(1, -20, 0, 30),
+		Position = UDim2.fromOffset(10, 32),
+		BackgroundColor3 = C.bg,
 	}, r)
-	corner(pill, 12)
+	corner(holder, 10)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 3),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+	}, holder)
+	new("UIPadding", {
+		PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 3),
+	}, holder)
+
+	local btns = {}
+	local n = #options
 	local function refresh()
-		for _, o in ipairs(options) do
-			if o[1] == S[key] then pill.Text = o[2] end
-		end
-	end
-	r.MouseButton1Click:Connect(function()
-		local idx = 1
 		for i, o in ipairs(options) do
-			if o[1] == S[key] then idx = i end
+			local sel = (o[1] == S[key])
+			btns[i].BackgroundColor3 = sel and C.accent or C.bg
+			btns[i].TextColor3 = sel and WHITE or C.sub
 		end
-		S[key] = options[(idx % #options) + 1][1]
-		refresh()
-		if onChange then onChange() end
-	end)
+	end
+	for i, o in ipairs(options) do
+		local b = new("TextButton", {
+			Size = UDim2.new(1 / n, -3, 0, 24),
+			BackgroundColor3 = C.bg,
+			Text = o[2],
+			Font = Enum.Font.GothamBold,
+			TextSize = 11,
+			TextColor3 = C.sub,
+			AutoButtonColor = false,
+			LayoutOrder = i,
+		}, holder)
+		corner(b, 8)
+		btns[i] = b
+		b.MouseButton1Click:Connect(function()
+			S[key] = o[1]
+			refresh()
+			if onChange then onChange() end
+		end)
+	end
 	refresh()
 end
 
-local function colorCycle(page, label, key)
-	local r = row(page)
-	rowLabel(r, label, 120)
-	local pill = new("TextLabel", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -8, 0.5, 0),
-		Size = UDim2.fromOffset(100, 24),
-		Font = Enum.Font.GothamBold,
-		TextSize = 11,
-		TextColor3 = Color3.fromRGB(15, 15, 20),
+local function swatches(page, label, key)
+	local r = row(page, 68)
+	rowLabel(r, label, 20, 2, 28)
+	local holder = new("Frame", {
+		Size = UDim2.new(1, -20, 0, 28),
+		Position = UDim2.fromOffset(12, 32),
+		BackgroundTransparency = 1,
 	}, r)
-	corner(pill, 12)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 7),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+	}, holder)
+
+	local strokes = {}
 	local function refresh()
-		pill.Text = COLORS[S[key]][1]
-		pill.BackgroundColor3 = COLORS[S[key]][2]
+		for i, st in ipairs(strokes) do
+			st.Transparency = (i == S[key]) and 0 or 1
+		end
 	end
-	r.MouseButton1Click:Connect(function()
-		S[key] = (S[key] % #COLORS) + 1
-		refresh()
-	end)
+	for i, c in ipairs(COLORS) do
+		local b = new("TextButton", {
+			Size = UDim2.fromOffset(26, 26),
+			BackgroundColor3 = c[2],
+			Text = "",
+			AutoButtonColor = false,
+			LayoutOrder = i,
+		}, holder)
+		corner(b, 13)
+		strokes[i] = outline(b, WHITE, 2.5, 1)
+		b.MouseButton1Click:Connect(function()
+			S[key] = i
+			refresh()
+		end)
+	end
 	refresh()
 end
 
 local function actionButton(page, text, color, onClick)
 	local b = new("TextButton", {
-		Size = UDim2.new(1, 0, 0, 40),
+		Size = UDim2.new(1, 0, 0, 42),
 		BackgroundColor3 = color,
 		Text = text,
 		Font = Enum.Font.GothamBold,
@@ -1064,7 +1387,11 @@ local function actionButton(page, text, color, onClick)
 		TextColor3 = WHITE,
 		LayoutOrder = nextOrder(),
 	}, page)
-	corner(b, 10)
+	corner(b, 12)
+	new("UIGradient", {
+		Color = ColorSequence.new(WHITE, Color3.fromRGB(205, 205, 215)),
+		Rotation = 90,
+	}, b)
 	b.MouseButton1Click:Connect(onClick)
 	return b
 end
@@ -1082,9 +1409,10 @@ local function statusCard(page, text)
 		TextColor3 = C.text,
 		LayoutOrder = nextOrder(),
 	}, page)
-	corner(l, 10)
+	corner(l, 12)
+	outline(l, C.line, 1, 0.65)
 	new("UIPadding", {
-		PaddingTop = UDim.new(0, 9), PaddingBottom = UDim.new(0, 9),
+		PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
 		PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12),
 	}, l)
 	return l
@@ -1109,7 +1437,7 @@ end
 
 local function textInput(page, placeholder, onSubmit)
 	local box = new("TextBox", {
-		Size = UDim2.new(1, 0, 0, 38),
+		Size = UDim2.new(1, 0, 0, 40),
 		BackgroundColor3 = C.card,
 		TextColor3 = C.text,
 		PlaceholderText = placeholder,
@@ -1120,14 +1448,14 @@ local function textInput(page, placeholder, onSubmit)
 		TextSize = 13,
 		LayoutOrder = nextOrder(),
 	}, page)
-	corner(box, 10)
-	outline(box, C.accent, 1, 0.7)
+	corner(box, 12)
+	outline(box, C.accent, 1.2, 0.55)
 	box.FocusLost:Connect(function() onSubmit(box.Text) end)
 	return box
 end
 
 local function meters(v) return v .. "m" end
-local function trim(s) return string.lower(s:match("^%s*(.-)%s*$")) end
+local function percent(v) return math.floor(v * 100 + 0.5) .. "%" end
 
 ----------------------------------------------------------------
 -- ISI: SPAWN
@@ -1138,25 +1466,29 @@ local spawnStatus = statusCard(pageSpawn, "Belum ada spawn point.")
 section(pageSpawn, "Aksi")
 actionButton(pageSpawn, "📍  Simpan Spawn Point", C.on, function()
 	local char = player.Character
-	local root = getRoot()
+	local r = getRoot()
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if not (root and hum and hum.Health > 0) then
+	if not (r and hum and hum.Health > 0) then
 		spawnStatus.Text = "Tidak bisa menyimpan: karakter tidak ada atau sudah mati."
+		toast("Gagal menyimpan spawn", C.danger)
 		return
 	end
-	saved = root.CFrame
+	saved = r.CFrame
 	placeMarker(saved)
 	local p = saved.Position
 	spawnStatus.Text = string.format("Tersimpan di (%d, %d, %d).", p.X, p.Y, p.Z)
+	toast("📍 Spawn point tersimpan", C.on)
 end)
 
 actionButton(pageSpawn, "🚀  Teleport ke Spawn Point", C.accent, function()
 	if not saved then
 		spawnStatus.Text = "Belum ada spawn point."
+		toast("Belum ada spawn point", C.danger)
 		return
 	end
 	if teleportTo(saved + Vector3.new(0, 3, 0)) then
 		spawnStatus.Text = "Teleport ke spawn point."
+		toast("🚀 Teleport berhasil", C.accent)
 	end
 end)
 
@@ -1164,6 +1496,7 @@ actionButton(pageSpawn, "🗑  Hapus Spawn Point", C.danger, function()
 	saved = nil
 	removeMarker()
 	spawnStatus.Text = "Spawn point dihapus. Respawn kembali ke titik bawaan."
+	toast("Spawn point dihapus", C.sub)
 end)
 
 section(pageSpawn, "Opsi")
@@ -1173,11 +1506,44 @@ toggle(pageSpawn, "Tampilkan penanda", "ShowMarker", function()
 end)
 
 ----------------------------------------------------------------
--- ISI: ESP (satu menu, tiga grup)
+-- ISI: ESP
 ----------------------------------------------------------------
-toggle(pageEsp, "ESP Semua (master)", "EspAll", function()
+-- chip jumlah
+local chipRow = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 34),
+	BackgroundTransparency = 1,
+	LayoutOrder = nextOrder(),
+}, pageEsp)
+new("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal,
+	Padding = UDim.new(0, 6),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+}, chipRow)
+
+local function chip(icon, color, ord)
+	local f = new("Frame", {
+		Size = UDim2.new(1 / 3, -4, 1, 0),
+		BackgroundColor3 = C.card,
+		LayoutOrder = ord,
+	}, chipRow)
+	corner(f, 12)
+	outline(f, color, 1.2, 0.45)
+	return new("TextLabel", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = icon .. "  0",
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		TextColor3 = color,
+	}, f)
+end
+chipP = chip("👤", COLORS[1][2], 1)
+chipM = chip("👹", COLORS[2][2], 2)
+chipI = chip("🎒", COLORS[4][2], 3)
+
+toggle(pageEsp, "👁  ESP Semua (master)", "EspAll", function()
 	for _, k in ipairs({ "EspPlayer", "EspMonster", "EspItem" }) do
-		if setters[k] then setters[k](S.EspAll) end
+		if setters[k] then setters[k](S.EspAll, true) end
 	end
 end)
 
@@ -1186,9 +1552,10 @@ local gPlayer = group(pageEsp, "👤  MANUSIA", COLORS[1][2])
 toggle(gPlayer, "ESP Manusia", "EspPlayer")
 toggle(gPlayer, "Tampilkan nama", "PName")
 toggle(gPlayer, "Tampilkan jarak", "PDist")
-colorCycle(gPlayer, "Warna", "PColor")
+toggle(gPlayer, "Garis tracer", "PTracer")
+swatches(gPlayer, "Warna", "PColor")
 toggle(gPlayer, "Batas jarak", "PLimitOn")
-stepper(gPlayer, "Jarak maksimal", "PLimit", 50, 50, 2000, nil, meters)
+slider(gPlayer, "Jarak maksimal", "PLimit", 50, 2000, 50, nil, meters)
 
 -- 👹 MONSTER
 local gMonster = group(pageEsp, "👹  MONSTER", COLORS[2][2])
@@ -1199,9 +1566,10 @@ monsterInfo = statusCard(gMonster, "ESP Monster belum aktif.")
 toggle(gMonster, "Tampilkan nama", "MName")
 toggle(gMonster, "Tampilkan jarak", "MDist")
 toggle(gMonster, "Pakai nama asli model", "MRealName")
-colorCycle(gMonster, "Warna", "MColor")
+toggle(gMonster, "Garis tracer", "MTracer")
+swatches(gMonster, "Warna", "MColor")
 toggle(gMonster, "Batas jarak", "MLimitOn")
-stepper(gMonster, "Jarak maksimal", "MLimit", 50, 50, 2000, nil, meters)
+slider(gMonster, "Jarak maksimal", "MLimit", 50, 2000, 50, nil, meters)
 textInput(gMonster, "Filter nama monster, contoh: zombie", function(text)
 	S.MonsterFilter = trim(text)
 	if S.EspMonster then startMonsterTrack() end
@@ -1210,6 +1578,10 @@ infoLabel(gMonster, "Filter kosong = otomatis (punya Humanoid / AnimationControl
 
 -- 🎒 ITEM
 local gItem = group(pageEsp, "🎒  ITEM", COLORS[4][2])
+local function restartItems()
+	if S.EspItem then startItemTrack() end
+end
+
 toggle(gItem, "ESP Item", "EspItem", function()
 	if S.EspItem then startItemTrack() else stopItemTrack() end
 end)
@@ -1217,14 +1589,67 @@ itemInfo = statusCard(gItem, "ESP Item belum aktif.")
 toggle(gItem, "Tampilkan nama", "IName")
 toggle(gItem, "Tampilkan jarak", "IDist")
 toggle(gItem, "Pakai nama asli item", "IRealName")
-colorCycle(gItem, "Warna", "IColor")
+toggle(gItem, "Garis tracer", "ITracer")
+swatches(gItem, "Warna", "IColor")
 toggle(gItem, "Batas jarak", "ILimitOn")
-stepper(gItem, "Jarak maksimal", "ILimit", 50, 50, 2000, nil, meters)
+slider(gItem, "Jarak maksimal", "ILimit", 50, 2000, 50, nil, meters)
+segmented(gItem, "Mode deteksi item", "ItemMode", {
+	{ "auto", "Otomatis" },
+	{ "small", "Semua kecil" },
+	{ "learned", "Diajari" },
+}, restartItems)
 textInput(gItem, "Filter nama item, contoh: key", function(text)
 	S.ItemFilter = trim(text)
-	if S.EspItem then startItemTrack() end
+	restartItems()
 end)
-infoLabel(gItem, "Otomatis: Tool yang tergeletak, objek dengan tombol ambil/pick/take, dan Part/Model kecil bernama item, loot, coin, key, ammo, dll. Maksimal 300 item.")
+
+local diagCard = statusCard(gItem, "")
+diagCard.Visible = false
+
+actionButton(gItem, "➕  Ajari item terdekat", C.accent, function()
+	task.spawn(function()
+		toast("Mencari objek terdekat…", C.accent)
+		local list = nearestParts(20, 60)
+		local top = list[1]
+		if not top then
+			toast("Tidak ada objek dekat. Berdirilah dekat item.", C.danger)
+			return
+		end
+		local sig = sigOf(top.p)
+		if not learned[sig] then
+			learned[sig] = top.p.Name
+			learnedCount += 1
+		end
+		restartItems()
+		toast("Dipelajari: " .. top.p.Name .. "  (" .. math.floor(top.dist) .. "m)", C.on)
+	end)
+end)
+
+actionButton(gItem, "🔍  Cek objek di sekitar", C.cyan, function()
+	task.spawn(function()
+		diagCard.Visible = true
+		diagCard.Text = "Memindai…"
+		local list = nearestParts(60, 80)
+		if #list == 0 then
+			diagCard.Text = "Tidak ada objek dalam jarak 80 m."
+			return
+		end
+		local out = {}
+		for i = 1, math.min(6, #list) do
+			out[#out + 1] = string.format("%d. %s · %dm", i, describe(list[i].p), math.floor(list[i].dist))
+		end
+		diagCard.Text = table.concat(out, "\n")
+	end)
+end)
+
+actionButton(gItem, "🧹  Lupakan item yang diajari", C.danger, function()
+	table.clear(learned)
+	learnedCount = 0
+	restartItems()
+	toast("Daftar pelajaran dihapus", C.sub)
+end)
+
+infoLabel(gItem, "Otomatis: Tool tergeletak, tombol ambil/pick/take, nama berisi item/loot/coin/key/ball, dan Part berbentuk bola. Item tidak terdeteksi? Berdiri dekat item lalu tekan Ajari. Semua kecil = sorot semua Part kecil (bisa banyak). Maksimal 300 item.")
 
 ----------------------------------------------------------------
 -- ISI: VISUAL
@@ -1238,7 +1663,7 @@ toggle(pageVisual, "Fullbright (terang)", "Fullbright", function()
 end)
 section(pageVisual, "Kamera")
 toggle(pageVisual, "Atur FOV kamera", "CustomFov", setFovMode)
-stepper(pageVisual, "Nilai FOV", "Fov", 5, 40, 120)
+slider(pageVisual, "Nilai FOV", "Fov", 40, 120, 1)
 infoLabel(pageVisual, "Saat dimatikan, kabut, cahaya, dan FOV kembali seperti semula.")
 
 ----------------------------------------------------------------
@@ -1247,32 +1672,45 @@ infoLabel(pageVisual, "Saat dimatikan, kabut, cahaya, dan FOV kembali seperti se
 local function refreshLock()
 	lockBtn.Text = S.Locked and "🔒" or "🔓"
 	tween(lockBtn, { BackgroundColor3 = S.Locked and C.on or C.card })
-	mainStroke.Color = S.Locked and C.on or C.accent
+	glow.Color = S.Locked
+		and ColorSequence.new(C.on, Color3.fromRGB(120, 255, 190), C.on)
+		or ColorSequence.new({
+			ColorSequenceKeypoint.new(0, C.accent),
+			ColorSequenceKeypoint.new(0.35, C.accent2),
+			ColorSequenceKeypoint.new(0.7, C.cyan),
+			ColorSequenceKeypoint.new(1, C.accent),
+		})
 end
 lockBtn.MouseButton1Click:Connect(function() setters.Locked(not S.Locked) end)
 
 section(pageSet, "Jendela")
 toggle(pageSet, "Kunci posisi jendela", "Locked", refreshLock)
-stepper(pageSet, "Ukuran menu", "UiScale", 0.1, 0.6, 1.4, function()
-	uiScale.Scale = S.UiScale
-end, function(v) return math.floor(v * 100 + 0.5) .. "%" end)
+slider(pageSet, "Ukuran menu", "UiScale", 0.6, 1.3, 0.05, applyScale, percent)
+slider(pageSet, "Transparansi menu", "Opacity", 0, 0.5, 0.05, function()
+	main.BackgroundTransparency = S.Opacity
+end, percent)
 
 section(pageSet, "ESP")
-cycle(pageSet, "Gaya sorotan", "Style", {
-	{ "Isi", "Isi + Garis" },
-	{ "Garis", "Garis saja" },
+segmented(pageSet, "Gaya sorotan", "Style", {
+	{ "fill", "Isi + Garis" },
+	{ "line", "Garis saja" },
 })
 
 section(pageSet, "Darurat")
 actionButton(pageSet, "⛔  Matikan semua fitur", C.danger, function()
-	for _, k in ipairs({ "EspAll", "EspPlayer", "EspMonster", "EspItem", "NoFog", "Fullbright", "CustomFov" }) do
-		if setters[k] then setters[k](false) end
+	for _, k in ipairs({
+		"EspAll", "EspPlayer", "EspMonster", "EspItem",
+		"PTracer", "MTracer", "ITracer", "NoFog", "Fullbright", "CustomFov",
+	}) do
+		if setters[k] then setters[k](false, true) end
 	end
+	toast("Semua fitur dimatikan", C.danger)
 end)
-infoLabel(pageSet, "Toolkit v5 · tombol ✕ menutup menu, tombol ≡ membukanya lagi.")
+infoLabel(pageSet, "Toolkit v6 · tombol — menyembunyikan menu jadi bola 👁 yang bisa digeser. Ketuk bola untuk membuka lagi.")
 
 refreshLock()
-setTab("SPAWN")
+setTab("ESP")
+toast("Toolkit v6 siap", C.accent)
 
 ----------------------------------------------------------------
 -- RESPAWN -> PINDAH KE SPAWN POINT
@@ -1280,8 +1718,8 @@ setTab("SPAWN")
 player.CharacterAdded:Connect(function(char)
 	if not (S.AutoSpawn and saved) then return end
 
-	local root = char:WaitForChild("HumanoidRootPart", 10)
-	if not root then return end
+	local r = char:WaitForChild("HumanoidRootPart", 10)
+	if not r then return end
 
 	local target = saved + Vector3.new(0, 3, 0)
 	char:PivotTo(target)
@@ -1289,7 +1727,7 @@ player.CharacterAdded:Connect(function(char)
 	task.delay(0.15, function()
 		if char.Parent and S.AutoSpawn and saved then
 			char:PivotTo(target)
-			root.AssemblyLinearVelocity = Vector3.zero
+			r.AssemblyLinearVelocity = Vector3.zero
 		end
 	end)
 
