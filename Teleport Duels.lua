@@ -1,4 +1,4 @@
---// AimAssist Mobile v6.4 (Duel, kamera TPP normal + ESP) - untuk place Studio milikmu sendiri
+--// AimAssist Mobile v6.5 (Duel, kamera TPP normal) - untuk place Studio milikmu sendiri
 --// LocalScript -> StarterPlayer > StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -18,7 +18,7 @@ local S = {
 	AimMode = "Camera",         -- Camera / Character / Both
 	Fov = 150,
 	Smooth = 3,
-	WallCheck = false,          -- default OFF supaya arena duel tidak memblokir
+	WallCheck = true,           -- langsung ON
 	TargetLock = true,
 	IgnoreTeams = true,         -- duel: abaikan Team, semua pemain lain = musuh
 	PartMode = "Head",          -- Head / Body / Random
@@ -26,10 +26,10 @@ local S = {
 	PriorityMode = "Crosshair", -- Crosshair / Jarak / Darah
 	PredictOn = false,
 	Predict = 0.10,             -- detik
+	SideOn = true,              -- panel side toggle (Aim & Auto Aim)
 	-- esp
 	Esp = false,
 	EspName = true,
-	EspHealth = true,
 	-- umum
 	MaxDistOn = false,
 	MaxDist = 300,
@@ -197,7 +197,7 @@ local function getBestTarget()
 end
 
 ----------------------------------------------------------------
--- ESP (objek)
+-- ESP (nama & jarak saja)
 ----------------------------------------------------------------
 local espObjs = {}
 
@@ -225,34 +225,21 @@ local function makeEsp(char, part)
 
 	local bb = Instance.new("BillboardGui")
 	bb.Name = "AimAssistTag"
-	bb.Size = UDim2.fromOffset(130, 30)
+	bb.Size = UDim2.fromOffset(150, 18)
 	bb.StudsOffset = Vector3.new(0, 3, 0)
 	bb.AlwaysOnTop = true
 	bb.Adornee = part
 	bb.Parent = part
 
 	local nameL = Instance.new("TextLabel")
-	nameL.Size = UDim2.new(1, 0, 0, 16)
+	nameL.Size = UDim2.fromScale(1, 1)
 	nameL.BackgroundTransparency = 1
 	nameL.Font = Enum.Font.GothamBold
 	nameL.TextSize = 12
 	nameL.TextStrokeTransparency = 0.3
 	nameL.Parent = bb
 
-	local barBg = Instance.new("Frame")
-	barBg.Size = UDim2.fromOffset(80, 5)
-	barBg.Position = UDim2.new(0.5, -40, 0, 20)
-	barBg.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-	barBg.BorderSizePixel = 0
-	barBg.Parent = bb
-
-	local fill = Instance.new("Frame")
-	fill.Size = UDim2.fromScale(1, 1)
-	fill.BorderSizePixel = 0
-	fill.BackgroundColor3 = GREEN
-	fill.Parent = barBg
-
-	return { hl = hl, bb = bb, nameL = nameL, barBg = barBg, fill = fill }
+	return { hl = hl, bb = bb, nameL = nameL }
 end
 
 ----------------------------------------------------------------
@@ -298,7 +285,46 @@ local function updateCircle()
 	circle.Size = UDim2.fromOffset(S.Fov * 2, S.Fov * 2)
 end
 
--- Jendela
+----------------------------------------------------------------
+-- DRAG (bisa digeser dengan jari / mouse, tidak keluar layar)
+----------------------------------------------------------------
+-- handle = bagian yang ditahan, target = frame yang ikut bergerak,
+-- onTap dipanggil kalau cuma diketuk (tidak digeser)
+local function makeDraggable(handle, target, onTap)
+	local dragging, dragInput, dragStart, startPos, moved = false, nil, nil, nil, false
+
+	handle.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.Touch
+			and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+		dragging, moved = true, false
+		dragInput = input
+		dragStart = input.Position
+		startPos = target.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+				if onTap and not moved then onTap() end
+			end
+		end)
+	end)
+
+	UIS.InputChanged:Connect(function(input)
+		if not dragging then return end
+		if input == dragInput or input.UserInputType == Enum.UserInputType.MouseMovement then
+			local d = input.Position - dragStart
+			if d.Magnitude > 6 then moved = true end
+			if moved then
+				local vp = camera.ViewportSize
+				local size = target.AbsoluteSize
+				local x = math.clamp(startPos.X.Offset + d.X, 0, math.max(vp.X - size.X, 0))
+				local y = math.clamp(startPos.Y.Offset + d.Y, 0, math.max(vp.Y - size.Y, 0))
+				target.Position = UDim2.fromOffset(x, y)
+			end
+		end
+	end)
+end
+
+-- Jendela utama
 local main = Instance.new("Frame")
 main.Size = UDim2.fromOffset(290, 320)
 main.Position = UDim2.fromOffset(10, 40)
@@ -317,7 +343,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -50, 1, 0)
 title.Position = UDim2.fromOffset(14, 0)
 title.BackgroundTransparency = 1
-title.Text = "Aim Assist  v6.4"
+title.Text = "⋮⋮  Aim Assist  v6.5"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 15
 title.TextXAlignment = Enum.TextXAlignment.Left
@@ -335,48 +361,28 @@ closeBtn.TextColor3 = WHITE
 closeBtn.Parent = header
 corner(closeBtn, 6)
 
--- geser menu lewat header
-do
-	local dragging, dragStart, startPos = false, nil, nil
-	header.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.Touch
-			or input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			dragStart = input.Position
-			startPos = main.Position
-			input.Changed:Connect(function()
-				if input.UserInputState == Enum.UserInputState.End then dragging = false end
-			end)
-		end
-	end)
-	UIS.InputChanged:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-			or input.UserInputType == Enum.UserInputType.Touch) then
-			local d = input.Position - dragStart
-			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
-				startPos.Y.Scale, startPos.Y.Offset + d.Y)
-		end
-	end)
-end
+makeDraggable(header, main, nil)
 
+-- Tombol buka kembali (bisa digeser, ketuk untuk membuka)
 local reopen = Instance.new("TextButton")
-reopen.Size = UDim2.fromOffset(36, 36)
+reopen.Size = UDim2.fromOffset(40, 40)
 reopen.Position = UDim2.fromOffset(10, 40)
 reopen.BackgroundColor3 = C.bg
 reopen.Text = "≡"
 reopen.Font = Enum.Font.GothamBold
-reopen.TextSize = 20
+reopen.TextSize = 22
 reopen.TextColor3 = WHITE
+reopen.AutoButtonColor = false
 reopen.Visible = false
 reopen.Parent = gui
-corner(reopen, 8)
+corner(reopen, 10)
 
 local function setUIVisible(v)
 	main.Visible = v
 	reopen.Visible = not v
 end
 closeBtn.MouseButton1Click:Connect(function() setUIVisible(false) end)
-reopen.MouseButton1Click:Connect(function() setUIVisible(true) end)
+makeDraggable(reopen, reopen, function() setUIVisible(true) end)
 
 -- Tab bar
 local tabBar = Instance.new("Frame")
@@ -449,6 +455,7 @@ local function nextOrder()
 end
 
 local aimBtn
+local sideRefresh = function() end
 
 local function applyAimBtn()
 	if not aimBtn then return end
@@ -463,6 +470,7 @@ end
 local function refreshHud()
 	if aimBtn then aimBtn.Visible = S.Enabled and not S.AutoAim end
 	circle.Visible = S.Enabled
+	sideRefresh()
 end
 
 local function section(page, text)
@@ -591,12 +599,113 @@ local function stepper(page, label, key, step, min, max, onChange)
 	refresh()
 end
 
+----------------------------------------------------------------
+-- SIDE TOGGLE (panel kecil: Aim & Auto Aim, bisa digeser)
+----------------------------------------------------------------
+local function setFlag(key, v)
+	S[key] = v
+	if key == "Enabled" then resumeAim = false end
+	-- Auto Aim hanya bekerja kalau Aim menyala, jadi ikut dinyalakan
+	if key == "AutoAim" and v and not S.Enabled then
+		S.Enabled = true
+		if refreshers.Enabled then refreshers.Enabled() end
+	end
+	if refreshers[key] then refreshers[key]() end
+	refreshHud()
+end
+
+local side = Instance.new("Frame")
+side.Name = "SideToggle"
+side.Size = UDim2.fromOffset(116, 0)
+side.AutomaticSize = Enum.AutomaticSize.Y
+side.Position = UDim2.fromOffset(14, 150)
+side.BackgroundColor3 = C.bg
+side.BorderSizePixel = 0
+side.Visible = S.SideOn
+side.Parent = gui
+corner(side, 10)
+do
+	local st = Instance.new("UIStroke")
+	st.Color = Color3.fromRGB(60, 60, 80)
+	st.Thickness = 1
+	st.Parent = side
+	local lay = Instance.new("UIListLayout")
+	lay.Padding = UDim.new(0, 4)
+	lay.SortOrder = Enum.SortOrder.LayoutOrder
+	lay.Parent = side
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 5)
+	pad.PaddingBottom = UDim.new(0, 5)
+	pad.PaddingLeft = UDim.new(0, 5)
+	pad.PaddingRight = UDim.new(0, 5)
+	pad.Parent = side
+end
+
+local sideHead = Instance.new("TextButton")
+sideHead.Size = UDim2.new(1, 0, 0, 24)
+sideHead.BackgroundColor3 = C.card
+sideHead.Text = "⋮⋮ AIM ▲"
+sideHead.Font = Enum.Font.GothamBold
+sideHead.TextSize = 11
+sideHead.TextColor3 = WHITE
+sideHead.AutoButtonColor = false
+sideHead.LayoutOrder = 1
+sideHead.Parent = side
+corner(sideHead, 6)
+
+local sideBody = Instance.new("Frame")
+sideBody.Size = UDim2.new(1, 0, 0, 0)
+sideBody.AutomaticSize = Enum.AutomaticSize.Y
+sideBody.BackgroundTransparency = 1
+sideBody.LayoutOrder = 2
+sideBody.Parent = side
+do
+	local lay = Instance.new("UIListLayout")
+	lay.Padding = UDim.new(0, 4)
+	lay.SortOrder = Enum.SortOrder.LayoutOrder
+	lay.Parent = sideBody
+end
+
+local sideBtns = {}
+local function sideToggle(label, key, ord)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, 0, 0, 30)
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 11
+	b.TextColor3 = WHITE
+	b.AutoButtonColor = false
+	b.LayoutOrder = ord
+	b.Parent = sideBody
+	corner(b, 7)
+	b.MouseButton1Click:Connect(function() setFlag(key, not S[key]) end)
+	sideBtns[key] = { btn = b, label = label }
+end
+sideToggle("Aim", "Enabled", 1)
+sideToggle("Auto Aim", "AutoAim", 2)
+
+sideRefresh = function()
+	for key, d in pairs(sideBtns) do
+		d.btn.Text = d.label .. ": " .. (S[key] and "ON" or "OFF")
+		d.btn.BackgroundColor3 = S[key] and C.on or C.off
+	end
+end
+
+local sideOpen = true
+makeDraggable(sideHead, side, function()
+	sideOpen = not sideOpen
+	sideBody.Visible = sideOpen
+	sideHead.Text = sideOpen and "⋮⋮ AIM ▲" or "⋮⋮ AIM ▼"
+end)
+
 ---------------- TAB AIM ----------------
 section(pageAim, "Utama")
 toggle(pageAim, "Aim", "Enabled", function()
 	resumeAim = false -- kalau dimatikan/dinyalakan manual, batalkan auto-nyala
 end)
 toggle(pageAim, "Auto Aim", "AutoAim")
+toggle(pageAim, "Side toggle (Aim & Auto Aim)", "SideOn", function()
+	side.Visible = S.SideOn
+end)
 cycle(pageAim, "Mode bidik", "AimMode", {
 	{ "Camera", "Kamera" }, { "Character", "Karakter" }, { "Both", "Keduanya" },
 })
@@ -623,7 +732,6 @@ toggle(pageEsp, "ESP", "Esp", function()
 	if not S.Esp then clearEsp() end
 end)
 toggle(pageEsp, "Nama & jarak", "EspName")
-toggle(pageEsp, "Health bar", "EspHealth")
 
 ---------------- TAB PENGATURAN ----------------
 section(pageSet, "Jarak")
@@ -763,17 +871,10 @@ RunService.Heartbeat:Connect(function(dt)
 				o.nameL.TextColor3 = color
 			end
 
-			o.bb.Enabled = S.EspName or S.EspHealth
-			o.nameL.Visible = S.EspName
-			o.barBg.Visible = S.EspHealth
-
+			o.bb.Enabled = S.EspName
 			if S.EspName then
-				o.nameL.Text = e.name .. " [" .. math.floor(worldDist(part.Position)) .. "m]"
-			end
-			if S.EspHealth then
-				local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-				o.fill.Size = UDim2.fromScale(frac, 1)
-				o.fill.BackgroundColor3 = Color3.fromHSV(frac * 0.33, 0.85, 1)
+				local t = e.name .. " [" .. math.floor(worldDist(part.Position)) .. "m]"
+				if o.nameL.Text ~= t then o.nameL.Text = t end
 			end
 		end
 	end
@@ -959,4 +1060,4 @@ end)
 
 if player.Character then task.spawn(hookDeath, player.Character) end
 
-print("[AimAssist] v6.4 loaded")
+print("[AimAssist] v6.5 loaded")
