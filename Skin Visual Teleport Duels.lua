@@ -1,4 +1,4 @@
---// Weapon Skin Preview (client-side only) - for your own Studio place
+--// Weapon Skin Preview v2 (client-side only) - for your own Studio place
 --// LocalScript -> StarterPlayer > StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -12,18 +12,18 @@ local camera = workspace.CurrentCamera
 -- CONFIG
 ----------------------------------------------------------------
 local CFG = {
-	-- folders (visible to the client) that hold your weapon skin models
+	-- folders (visible to the client) holding your skins. Every Tool / Model / MeshPart = one skin.
 	SkinFolders = {
 		{ ReplicatedStorage, "WeaponSkins" },
 		{ ReplicatedStorage, "Skins" },
 		{ ReplicatedStorage, "Weapons" },
 		{ ReplicatedStorage, "Shop" },
-		{ ReplicatedStorage, "Cosmetics" },
 	},
-	MaxDepth = 3,
+	MaxDepth = 4,
 	MaxPreviews = 60,
 }
 
+local RARITY_ORDER = { "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic" }
 local RARITY = {
 	Common = Color3.fromRGB(160, 160, 172),
 	Uncommon = Color3.fromRGB(80, 200, 120),
@@ -33,7 +33,9 @@ local RARITY = {
 	Mythic = Color3.fromRGB(255, 70, 90),
 }
 
-local S = { Mode = "Held", Cat = "All", Search = "", Previews = true }
+-- Mode "All"  = the chosen skin follows ANY weapon you hold
+-- Mode "Held" = the chosen skin is saved only for the weapon you hold right now
+local S = { Mode = "All", Rarity = "All", Search = "", Previews = true }
 
 local WHITE = Color3.new(1, 1, 1)
 local C = {
@@ -63,7 +65,7 @@ local function corner(o, r)
 	return new("UICorner", { CornerRadius = UDim.new(0, r or 8) }, o)
 end
 
-local statusLabel, heldLabel
+local statusLabel
 local function setStatus(t)
 	if statusLabel then statusLabel.Text = t end
 end
@@ -74,38 +76,48 @@ local function rarityOf(inst)
 	return RARITY[r] and r or "Common"
 end
 
+local function rarityRank(r)
+	return table.find(RARITY_ORDER, r) or 1
+end
+
 ----------------------------------------------------------------
--- SKIN LIST
+-- SKIN LIST (flat: one entry = one skin)
 ----------------------------------------------------------------
-local entries, cats = {}, {}
+local entries = {}
 
 local function buildEntries()
 	table.clear(entries)
-	table.clear(cats)
-	local seenCat = {}
+	local seen = {}
 
-	local function scan(parent, cat, depth)
+	local function scan(parent, depth)
 		for _, c in ipairs(parent:GetChildren()) do
 			if c:IsA("Tool") or c:IsA("Model") or c:IsA("BasePart") then
-				entries[#entries + 1] = {
-					id = c:GetFullName(), name = c.Name, cat = cat,
-					rarity = rarityOf(c), inst = c,
-				}
-				if not seenCat[cat] then
-					seenCat[cat] = true
-					cats[#cats + 1] = cat
+				local id = c:GetFullName()
+				if not seen[id] then
+					seen[id] = true
+					entries[#entries + 1] = {
+						id = id,
+						name = tostring(c:GetAttribute("DisplayName") or c.Name),
+						rarity = rarityOf(c),
+						inst = c,
+					}
 				end
 			elseif c:IsA("Folder") and depth < CFG.MaxDepth then
-				scan(c, depth == 1 and c.Name or cat, depth + 1)
+				scan(c, depth + 1)
 			end
 		end
 	end
 
 	for _, def in ipairs(CFG.SkinFolders) do
 		local f = def[1]:FindFirstChild(def[2])
-		if f then scan(f, f.Name, 1) end
+		if f then scan(f, 1) end
 	end
-	table.sort(cats)
+
+	table.sort(entries, function(a, b)
+		local ra, rb = rarityRank(a.rarity), rarityRank(b.rarity)
+		if ra ~= rb then return ra > rb end
+		return a.name < b.name
+	end)
 end
 
 ----------------------------------------------------------------
@@ -143,11 +155,11 @@ local function makeContainer(src)
 end
 
 ----------------------------------------------------------------
--- APPLY SKINS TO TOOLS (client only)
+-- APPLY SKINS ON YOUR TOOLS (client only)
 ----------------------------------------------------------------
-local skinFor = {}      -- [toolName] = entry
-local globalSkin = nil  -- entry used for every weapon
-local rotFor = {}       -- [toolName] = CFrame
+local skinFor = {}      -- [toolName] = entry   (Mode "Held")
+local globalSkin = nil  -- entry used for every weapon (Mode "All")
+local rotFor = {}       -- [toolName] = CFrame  (manual rotation fix)
 local applied = {}      -- [tool] = {entry, rot, container, undo}
 
 local function getEntry(tool)
@@ -199,7 +211,7 @@ local function applyTo(tool, entry)
 		return false
 	end
 
-	-- hide the original look (undo restores it)
+	-- hide the base weapon's own look (undo restores it)
 	local undo = {}
 	for _, d in ipairs(tool:GetDescendants()) do
 		if d:IsA("BasePart") then
@@ -231,18 +243,18 @@ local function applyTo(tool, entry)
 	return true
 end
 
-local render -- forward declaration
-local renderQueued = false
-local function queueRender()
-	if renderQueued then return end
-	renderQueued = true
+local refreshUI -- forward declaration
+local uiQueued = false
+local function queueUI()
+	if uiQueued then return end
+	uiQueued = true
 	task.defer(function()
-		renderQueued = false
-		if render then render() end
+		uiQueued = false
+		if refreshUI then refreshUI() end
 	end)
 end
 
-local function refreshAll()
+local function refreshAllTools()
 	forEachTool(function(tool)
 		local e = getEntry(tool)
 		if e then applyTo(tool, e) else removeFrom(tool) end
@@ -259,12 +271,12 @@ local function chooseSkin(e)
 	if S.Mode == "All" then
 		table.clear(skinFor)
 		globalSkin = e
-		refreshAll()
-		setStatus("All weapons now use: " .. e.name .. "  (only you can see this)")
+		refreshAllTools()
+		setStatus("Equipped: " .. e.name .. " on any weapon you hold. (only you can see this)")
 	else
 		local h = heldTool()
 		if not h then
-			setStatus("Hold a weapon first, then pick a skin.")
+			setStatus("Hold a weapon first, then equip.")
 			return
 		end
 		skinFor[h.Name] = e
@@ -273,7 +285,7 @@ local function chooseSkin(e)
 			setStatus("Couldn't apply '" .. e.name .. "' (no parts inside?).")
 			return
 		end
-		setStatus(h.Name .. " now uses: " .. e.name .. "  (only you can see this)")
+		setStatus(h.Name .. " now looks like: " .. e.name .. " (only you can see this)")
 	end
 end
 
@@ -289,7 +301,7 @@ local function removeSkin()
 		end
 		skinFor[h.Name] = nil
 	end
-	refreshAll()
+	refreshAllTools()
 	setStatus("Skin removed.")
 end
 
@@ -309,7 +321,7 @@ local function rotateHeld(axis)
 	end
 	local e = getEntry(h)
 	if not e then
-		setStatus("Pick a skin for this weapon first.")
+		setStatus("Equip a skin first.")
 		return
 	end
 	local r = math.rad(90)
@@ -330,14 +342,14 @@ local function resetRotation()
 end
 
 ----------------------------------------------------------------
--- TOOL WATCHING (new tools after respawn get the skin too)
+-- TOOL WATCHING (tools picked up / respawned get the skin too)
 ----------------------------------------------------------------
 local function onTool(tool)
 	task.spawn(function()
 		tool:WaitForChild("Handle", 3)
 		local e = getEntry(tool)
 		if e and tool.Parent then applyTo(tool, e) end
-		queueRender()
+		queueUI()
 	end)
 end
 
@@ -347,10 +359,10 @@ local function hookCharacter(char)
 	end
 	char.ChildAdded:Connect(function(c)
 		if c:IsA("Tool") then onTool(c) end
-		queueRender()
+		queueUI()
 	end)
 	char.ChildRemoved:Connect(function(c)
-		if c:IsA("Tool") then queueRender() end
+		if c:IsA("Tool") then queueUI() end
 	end)
 
 	local bp = player:WaitForChild("Backpack", 5)
@@ -367,7 +379,7 @@ end
 player.CharacterAdded:Connect(function(char)
 	table.clear(applied) -- old tools are gone
 	hookCharacter(char)
-	queueRender()
+	queueUI()
 end)
 if player.Character then task.spawn(hookCharacter, player.Character) end
 
@@ -415,15 +427,24 @@ local function makeDraggable(handle, target, onTap)
 	end)
 end
 
+local BASE_H = 482
 local main = new("Frame", {
-	Size = UDim2.fromOffset(332, 426),
-	Position = UDim2.fromOffset(70, 30),
+	Size = UDim2.fromOffset(332, BASE_H),
+	Position = UDim2.fromOffset(70, 10),
 	BackgroundColor3 = C.bg,
 	BorderSizePixel = 0,
 	Visible = false,
 }, gui)
 corner(main, 12)
 new("UIStroke", { Color = C.stroke, Thickness = 1 }, main)
+local mainScale = new("UIScale", { Scale = 1 }, main)
+
+local function applyScale()
+	local vp = camera.ViewportSize
+	mainScale.Scale = math.clamp((vp.Y - 20) / BASE_H, 0.55, 1)
+end
+applyScale()
+camera:GetPropertyChangedSignal("ViewportSize"):Connect(applyScale)
 
 local logo = new("TextButton", {
 	Size = UDim2.fromOffset(46, 46),
@@ -475,7 +496,7 @@ corner(closeBtn, 6)
 closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
 makeDraggable(header, main, nil)
 
-heldLabel = new("TextLabel", {
+local heldLabel = new("TextLabel", {
 	Size = UDim2.new(1, -16, 0, 16),
 	Position = UDim2.fromOffset(8, 34),
 	BackgroundTransparency = 1,
@@ -500,7 +521,7 @@ local search = new("TextBox", {
 }, main)
 corner(search, 8)
 
--- category chips (scroll sideways)
+-- rarity chips
 local chipRow = new("ScrollingFrame", {
 	Size = UDim2.new(1, -16, 0, 24),
 	Position = UDim2.fromOffset(8, 84),
@@ -519,7 +540,7 @@ new("UIListLayout", {
 
 -- skin grid
 local grid = new("ScrollingFrame", {
-	Size = UDim2.new(1, -16, 0, 176),
+	Size = UDim2.new(1, -16, 0, 150),
 	Position = UDim2.fromOffset(8, 112),
 	BackgroundTransparency = 1,
 	BorderSizePixel = 0,
@@ -529,7 +550,7 @@ local grid = new("ScrollingFrame", {
 	AutomaticCanvasSize = Enum.AutomaticSize.Y,
 }, main)
 new("UIGridLayout", {
-	CellSize = UDim2.new(1 / 3, -5, 0, 92),
+	CellSize = UDim2.new(1 / 3, -5, 0, 84),
 	CellPadding = UDim2.fromOffset(6, 6),
 	SortOrder = Enum.SortOrder.LayoutOrder,
 }, grid)
@@ -547,7 +568,61 @@ local emptyLabel = new("TextLabel", {
 	Visible = false,
 }, main)
 
+-- preview panel (like the in-game inventory: big preview + name + EQUIP)
+local panel = new("Frame", {
+	Size = UDim2.new(1, -16, 0, 86),
+	Position = UDim2.fromOffset(8, 266),
+	BackgroundColor3 = C.card,
+}, main)
+corner(panel, 10)
+local panelStroke = new("UIStroke", { Color = C.stroke, Thickness = 1.5 }, panel)
+
+local panelVp = new("ViewportFrame", {
+	Size = UDim2.fromOffset(112, 74),
+	Position = UDim2.fromOffset(6, 6),
+	BackgroundColor3 = C.view,
+	BorderSizePixel = 0,
+}, panel)
+corner(panelVp, 8)
+
+local panelName = new("TextLabel", {
+	Size = UDim2.new(1, -132, 0, 22),
+	Position = UDim2.fromOffset(126, 6),
+	BackgroundTransparency = 1,
+	Text = "Pick a skin",
+	Font = Enum.Font.GothamBlack,
+	TextSize = 14,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextColor3 = WHITE,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+}, panel)
+local panelRarity = new("TextLabel", {
+	Size = UDim2.new(1, -132, 0, 14),
+	Position = UDim2.fromOffset(126, 28),
+	BackgroundTransparency = 1,
+	Text = "",
+	Font = Enum.Font.GothamBold,
+	TextSize = 11,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextColor3 = C.sub,
+}, panel)
+local equipBtn = new("TextButton", {
+	Size = UDim2.new(1, -132, 0, 32),
+	Position = UDim2.fromOffset(126, 46),
+	BackgroundColor3 = C.off,
+	Text = "EQUIP",
+	Font = Enum.Font.GothamBold,
+	TextSize = 13,
+	TextColor3 = WHITE,
+	AutoButtonColor = false,
+}, panel)
+corner(equipBtn, 8)
+
+local picked = nil
+local panelShown = nil
+
 local function fillViewport(vp, entry)
+	for _, ch in ipairs(vp:GetChildren()) do ch:Destroy() end
 	local container = makeContainer(entry.inst)
 	if not container:FindFirstChildWhichIsA("BasePart", true) then
 		container:Destroy()
@@ -562,26 +637,78 @@ local function fillViewport(vp, entry)
 	cam.CFrame = CFrame.lookAt(center + Vector3.new(1, 0.45, 1).Unit * dist, center)
 end
 
-render = function()
+local cards = {} -- [id] = {stroke, tag, rc}
+
+local function refreshHighlights()
+	local sel = selectedEntry()
+	for id, c in pairs(cards) do
+		local equipped = sel ~= nil and sel.id == id
+		local isPicked = picked ~= nil and picked.id == id
+		c.stroke.Color = equipped and C.green or (isPicked and WHITE or c.rc)
+		c.stroke.Thickness = (equipped or isPicked) and 2.5 or 1.2
+		c.stroke.Transparency = (equipped or isPicked) and 0 or 0.35
+		c.tag.Text = equipped and "● EQUIPPED" or c.rarityText
+		c.tag.TextColor3 = equipped and C.green or c.rc
+	end
+end
+
+local function updatePanel()
+	if not picked then
+		if panelShown then
+			for _, ch in ipairs(panelVp:GetChildren()) do ch:Destroy() end
+			panelShown = nil
+		end
+		panelName.Text = "Pick a skin"
+		panelRarity.Text = ""
+		panelStroke.Color = C.stroke
+		equipBtn.Text = "EQUIP"
+		equipBtn.BackgroundColor3 = C.off
+		return
+	end
+
+	if panelShown ~= picked.id then
+		panelShown = picked.id
+		pcall(fillViewport, panelVp, picked)
+	end
+	local rc = RARITY[picked.rarity]
+	panelName.Text = picked.name
+	panelRarity.Text = picked.rarity:upper()
+	panelRarity.TextColor3 = rc
+	panelStroke.Color = rc
+
+	local sel = selectedEntry()
+	local on = sel ~= nil and sel.id == picked.id
+	equipBtn.Text = on and "UNEQUIP" or "EQUIP"
+	equipBtn.BackgroundColor3 = on and C.danger or C.green
+end
+
+local function updateHeld()
+	local h = heldTool()
+	heldLabel.Text = "Holding: " .. (h and h.Name or "nothing")
+		.. "   |   " .. (S.Mode == "All" and "Skin follows ANY weapon" or "Skin for THIS weapon only")
+	heldLabel.TextColor3 = h and C.green or C.sub
+end
+
+refreshUI = function()
+	updateHeld()
+	refreshHighlights()
+	updatePanel()
+end
+
+local function render()
 	for _, c in ipairs(grid:GetChildren()) do
 		if c:IsA("GuiButton") then c:Destroy() end
 	end
+	table.clear(cards)
 
-	local h = heldTool()
-	heldLabel.Text = "Holding: " .. (h and h.Name or "nothing")
-		.. "   |   Mode: " .. (S.Mode == "All" and "ALL weapons" or "HELD weapon")
-	heldLabel.TextColor3 = h and C.green or C.sub
-
-	local sel = selectedEntry()
 	local q = S.Search
 	local shown, previews = 0, 0
 
 	for _, e in ipairs(entries) do
-		local catOk = (S.Cat == "All") or (S.Cat == e.cat)
+		local rarOk = (S.Rarity == "All") or (S.Rarity == e.rarity)
 		local nameOk = (q == "") or (e.name:lower():find(q, 1, true) ~= nil)
-		if catOk and nameOk then
+		if rarOk and nameOk then
 			shown += 1
-			local selected = sel ~= nil and sel.id == e.id
 			local rc = RARITY[e.rarity]
 
 			local card = new("TextButton", {
@@ -591,14 +718,10 @@ render = function()
 				LayoutOrder = shown,
 			}, grid)
 			corner(card, 8)
-			new("UIStroke", {
-				Color = selected and C.green or rc,
-				Thickness = selected and 2.5 or 1.2,
-				Transparency = selected and 0 or 0.35,
-			}, card)
+			local st = new("UIStroke", { Color = rc, Thickness = 1.2, Transparency = 0.35 }, card)
 
 			local vp = new("ViewportFrame", {
-				Size = UDim2.new(1, -8, 0, 56),
+				Size = UDim2.new(1, -8, 0, 50),
 				Position = UDim2.fromOffset(4, 4),
 				BackgroundColor3 = C.view,
 				BorderSizePixel = 0,
@@ -611,7 +734,7 @@ render = function()
 
 			new("TextLabel", {
 				Size = UDim2.new(1, -8, 0, 14),
-				Position = UDim2.fromOffset(4, 62),
+				Position = UDim2.fromOffset(4, 55),
 				BackgroundTransparency = 1,
 				Text = e.name,
 				Font = Enum.Font.GothamBold,
@@ -619,23 +742,21 @@ render = function()
 				TextColor3 = C.text,
 				TextTruncate = Enum.TextTruncate.AtEnd,
 			}, card)
-			new("TextLabel", {
+			local tag = new("TextLabel", {
 				Size = UDim2.new(1, -8, 0, 12),
-				Position = UDim2.fromOffset(4, 77),
+				Position = UDim2.fromOffset(4, 69),
 				BackgroundTransparency = 1,
-				Text = selected and "● EQUIPPED" or e.rarity:upper(),
+				Text = e.rarity:upper(),
 				Font = Enum.Font.GothamBold,
 				TextSize = 9,
-				TextColor3 = selected and C.green or rc,
+				TextColor3 = rc,
 			}, card)
 
+			cards[e.id] = { stroke = st, tag = tag, rc = rc, rarityText = e.rarity:upper() }
+
 			card.MouseButton1Click:Connect(function()
-				if selected and S.Mode == "Held" then
-					removeSkin()
-				else
-					chooseSkin(e)
-				end
-				render()
+				picked = e
+				refreshUI()
 			end)
 		end
 	end
@@ -646,15 +767,16 @@ render = function()
 			and "No skins found.\nPut skin models (Tool / Model / MeshPart) in\nReplicatedStorage > WeaponSkins."
 			or "No skins match your search."
 	end
+	refreshUI()
 end
 
--- chips
+-- rarity chips
 local chipBtns = {}
 local function refreshChips()
 	for name, b in pairs(chipBtns) do
-		local sel = (name == S.Cat)
+		local sel = (name == S.Rarity)
 		b.BackgroundColor3 = sel and C.accent or C.card
-		b.TextColor3 = sel and WHITE or C.sub
+		b.TextColor3 = sel and WHITE or (RARITY[name] or C.sub)
 	end
 end
 
@@ -663,13 +785,18 @@ local function buildChips()
 		if c:IsA("GuiButton") then c:Destroy() end
 	end
 	table.clear(chipBtns)
+
+	local has = {}
+	for _, e in ipairs(entries) do has[e.rarity] = true end
 	local list = { "All" }
-	for _, c in ipairs(cats) do list[#list + 1] = c end
-	if not table.find(list, S.Cat) then S.Cat = "All" end
+	for _, r in ipairs(RARITY_ORDER) do
+		if has[r] then list[#list + 1] = r end
+	end
+	if not table.find(list, S.Rarity) then S.Rarity = "All" end
 
 	for i, name in ipairs(list) do
 		local b = new("TextButton", {
-			Size = UDim2.fromOffset(math.max(52, #name * 8 + 18), 24),
+			Size = UDim2.fromOffset(math.max(48, #name * 8 + 16), 24),
 			BackgroundColor3 = C.card,
 			Text = name:upper(),
 			Font = Enum.Font.GothamBold,
@@ -681,7 +808,7 @@ local function buildChips()
 		corner(b, 7)
 		chipBtns[name] = b
 		b.MouseButton1Click:Connect(function()
-			S.Cat = name
+			S.Rarity = name
 			refreshChips()
 			render()
 		end)
@@ -694,18 +821,22 @@ search:GetPropertyChangedSignal("Text"):Connect(function()
 	render()
 end)
 
--- rotation row
-local rotRow = new("Frame", {
-	Size = UDim2.new(1, -16, 0, 26),
-	Position = UDim2.fromOffset(8, 292),
-	BackgroundTransparency = 1,
-}, main)
-new("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal,
-	Padding = UDim.new(0, 4),
-	SortOrder = Enum.SortOrder.LayoutOrder,
-}, rotRow)
+-- EQUIP / UNEQUIP
+equipBtn.MouseButton1Click:Connect(function()
+	if not picked then
+		setStatus("Tap a skin first.")
+		return
+	end
+	local sel = selectedEntry()
+	if sel ~= nil and sel.id == picked.id then
+		removeSkin()
+	else
+		chooseSkin(picked)
+	end
+	refreshUI()
+end)
 
+-- small button helper
 local function smallBtn(parent, text, color, ord, fn, widthScale)
 	local b = new("TextButton", {
 		Size = UDim2.new(widthScale, -3, 1, 0),
@@ -721,39 +852,46 @@ local function smallBtn(parent, text, color, ord, fn, widthScale)
 	b.MouseButton1Click:Connect(fn)
 	return b
 end
+
+local function row(y, h)
+	local f = new("Frame", {
+		Size = UDim2.new(1, -16, 0, h),
+		Position = UDim2.fromOffset(8, y),
+		BackgroundTransparency = 1,
+	}, main)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 4),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, f)
+	return f
+end
+
+-- rotation row
+local rotRow = row(358, 24)
 smallBtn(rotRow, "↻ X", C.off, 1, function() rotateHeld("X") end, 0.2)
 smallBtn(rotRow, "↻ Y", C.off, 2, function() rotateHeld("Y") end, 0.2)
 smallBtn(rotRow, "↻ Z", C.off, 3, function() rotateHeld("Z") end, 0.2)
 smallBtn(rotRow, "Reset rotation", C.off, 4, resetRotation, 0.4)
 
--- mode + previews
-local modeRow = new("Frame", {
-	Size = UDim2.new(1, -16, 0, 26),
-	Position = UDim2.fromOffset(8, 322),
-	BackgroundTransparency = 1,
-}, main)
-new("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal,
-	Padding = UDim.new(0, 4),
-	SortOrder = Enum.SortOrder.LayoutOrder,
-}, modeRow)
-
-local modeHeld, modeAll, prevBtn
+-- mode row
+local modeRow = row(386, 26)
+local modeAll, modeHeld, prevBtn
 local function refreshOpts()
-	modeHeld.BackgroundColor3 = (S.Mode == "Held") and C.accent or C.off
 	modeAll.BackgroundColor3 = (S.Mode == "All") and C.accent or C.off
+	modeHeld.BackgroundColor3 = (S.Mode == "Held") and C.accent or C.off
 	prevBtn.Text = "Previews: " .. (S.Previews and "ON" or "OFF")
 	prevBtn.BackgroundColor3 = S.Previews and C.green or C.off
 end
-modeHeld = smallBtn(modeRow, "Held weapon", C.off, 1, function()
-	S.Mode = "Held"
-	refreshOpts()
-	render()
-end, 0.34)
-modeAll = smallBtn(modeRow, "All weapons", C.off, 2, function()
+modeAll = smallBtn(modeRow, "Any weapon", C.off, 1, function()
 	S.Mode = "All"
 	refreshOpts()
-	render()
+	refreshUI()
+end, 0.34)
+modeHeld = smallBtn(modeRow, "This weapon only", C.off, 2, function()
+	S.Mode = "Held"
+	refreshOpts()
+	refreshUI()
 end, 0.33)
 prevBtn = smallBtn(modeRow, "", C.off, 3, function()
 	S.Previews = not S.Previews
@@ -761,24 +899,15 @@ prevBtn = smallBtn(modeRow, "", C.off, 3, function()
 	render()
 end, 0.33)
 
--- actions
-local actRow = new("Frame", {
-	Size = UDim2.new(1, -16, 0, 30),
-	Position = UDim2.fromOffset(8, 354),
-	BackgroundTransparency = 1,
-}, main)
-new("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal,
-	Padding = UDim.new(0, 4),
-	SortOrder = Enum.SortOrder.LayoutOrder,
-}, actRow)
+-- action row
+local actRow = row(416, 28)
 smallBtn(actRow, "Remove skin", C.danger, 1, function()
 	removeSkin()
-	render()
+	refreshUI()
 end, 0.34)
 smallBtn(actRow, "Reset all", C.danger, 2, function()
 	resetAll()
-	render()
+	refreshUI()
 end, 0.33)
 smallBtn(actRow, "⟳ Refresh", C.accent, 3, function()
 	buildEntries()
@@ -788,8 +917,8 @@ smallBtn(actRow, "⟳ Refresh", C.accent, 3, function()
 end, 0.33)
 
 statusLabel = new("TextLabel", {
-	Size = UDim2.new(1, -16, 0, 30),
-	Position = UDim2.fromOffset(8, 390),
+	Size = UDim2.new(1, -16, 0, 32),
+	Position = UDim2.fromOffset(8, 448),
 	BackgroundTransparency = 1,
 	Text = "Preview only: other players won't see your skin.",
 	Font = Enum.Font.Gotham,
@@ -809,9 +938,9 @@ buildChips()
 render()
 setOpen(true)
 
--- shop folders can replicate a moment late: rescan once
+-- skin folders can replicate a moment late: rescan once
 task.delay(1.5, function()
 	buildEntries()
 	buildChips()
 	render()
-  end)
+end)
