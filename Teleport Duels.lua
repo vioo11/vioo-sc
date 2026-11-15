@@ -1,4 +1,4 @@
---// AimAssist Mobile v6.5 (Duel, kamera TPP normal) - untuk place Studio milikmu sendiri
+--// AimAssist Mobile v6.7 (Duel, kamera TPP normal) - untuk place Studio milikmu sendiri
 --// LocalScript -> StarterPlayer > StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -9,26 +9,28 @@ local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 ----------------------------------------------------------------
--- PENGATURAN
+-- PENGATURAN (default saat skrip dijalankan)
 ----------------------------------------------------------------
 local S = {
 	-- aim
-	Enabled = false,
-	AutoAim = false,
+	Enabled = true,             -- Aim langsung ON
+	AutoAim = true,             -- Auto Aim langsung ON
 	AimMode = "Camera",         -- Camera / Character / Both
-	Fov = 150,
+	Fov = 50,                   -- FOV bawaan 50
 	Smooth = 3,
-	WallCheck = true,           -- langsung ON
+	WallCheck = true,
 	TargetLock = true,
 	IgnoreTeams = true,         -- duel: abaikan Team, semua pemain lain = musuh
 	PartMode = "Head",          -- Head / Body / Random
-	PriorityOn = false,
+	PriorityOn = true,
 	PriorityMode = "Crosshair", -- Crosshair / Jarak / Darah
-	PredictOn = false,
+	PredictOn = true,
 	Predict = 0.10,             -- detik
+	StopOnKill = true,          -- aim mati saat musuh yang dikunci mati
+	ResumeOnRespawn = true,     -- aim nyala lagi saat musuh hidup lagi
 	SideOn = true,              -- panel side toggle (Aim & Auto Aim)
 	-- esp
-	Esp = false,
+	Esp = true,
 	EspName = true,
 	-- umum
 	MaxDistOn = false,
@@ -46,8 +48,9 @@ local SEARCH_INTERVAL = 0.05
 local WALL_INTERVAL = 0.1
 local ESP_INTERVAL = 0.2
 
--- status untuk auto-matikan saat mati dan nyalakan lagi saat respawn
-local resumeAim = false
+-- status auto-matikan / nyalakan lagi
+local resumeAim = false  -- setelah KAMU mati lalu respawn
+local waiting = nil      -- menunggu MUSUH hidup lagi: {plr, deadChar, since}
 local refreshers = {}
 
 ----------------------------------------------------------------
@@ -197,7 +200,7 @@ local function getBestTarget()
 end
 
 ----------------------------------------------------------------
--- ESP (nama & jarak saja)
+-- ESP (nama & jarak)
 ----------------------------------------------------------------
 local espObjs = {}
 
@@ -288,8 +291,6 @@ end
 ----------------------------------------------------------------
 -- DRAG (bisa digeser dengan jari / mouse, tidak keluar layar)
 ----------------------------------------------------------------
--- handle = bagian yang ditahan, target = frame yang ikut bergerak,
--- onTap dipanggil kalau cuma diketuk (tidak digeser)
 local function makeDraggable(handle, target, onTap)
 	local dragging, dragInput, dragStart, startPos, moved = false, nil, nil, nil, false
 
@@ -343,7 +344,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -50, 1, 0)
 title.Position = UDim2.fromOffset(14, 0)
 title.BackgroundTransparency = 1
-title.Text = "⋮⋮  Aim Assist  v6.5"
+title.Text = "⋮⋮  Aim Assist  v6.7"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 15
 title.TextXAlignment = Enum.TextXAlignment.Left
@@ -604,21 +605,26 @@ end
 ----------------------------------------------------------------
 local function setFlag(key, v)
 	S[key] = v
-	if key == "Enabled" then resumeAim = false end
+	if key == "Enabled" then
+		resumeAim = false
+		waiting = nil -- kamu mengatur manual, batalkan auto-nyala
+	end
 	-- Auto Aim hanya bekerja kalau Aim menyala, jadi ikut dinyalakan
 	if key == "AutoAim" and v and not S.Enabled then
 		S.Enabled = true
+		waiting = nil
 		if refreshers.Enabled then refreshers.Enabled() end
 	end
 	if refreshers[key] then refreshers[key]() end
 	refreshHud()
 end
 
+local SIDE_W = 116
 local side = Instance.new("Frame")
 side.Name = "SideToggle"
-side.Size = UDim2.fromOffset(116, 0)
+side.Size = UDim2.fromOffset(SIDE_W, 0)
 side.AutomaticSize = Enum.AutomaticSize.Y
-side.Position = UDim2.fromOffset(14, 150)
+side.Position = UDim2.fromOffset(0, 48) -- X diatur ke kanan atas di bawah
 side.BackgroundColor3 = C.bg
 side.BorderSizePixel = 0
 side.Visible = S.SideOn
@@ -640,6 +646,17 @@ do
 	pad.PaddingRight = UDim.new(0, 5)
 	pad.Parent = side
 end
+
+-- taruh panel di kanan atas saat pertama kali jalan
+task.spawn(function()
+	local t = 0
+	while camera.ViewportSize.X < 200 and t < 2 do
+		task.wait(0.1)
+		t += 0.1
+	end
+	local vp = camera.ViewportSize
+	side.Position = UDim2.fromOffset(math.max(vp.X - SIDE_W - 14, 0), 48)
+end)
 
 local sideHead = Instance.new("TextButton")
 sideHead.Size = UDim2.new(1, 0, 0, 24)
@@ -701,6 +718,7 @@ end)
 section(pageAim, "Utama")
 toggle(pageAim, "Aim", "Enabled", function()
 	resumeAim = false -- kalau dimatikan/dinyalakan manual, batalkan auto-nyala
+	waiting = nil
 end)
 toggle(pageAim, "Auto Aim", "AutoAim")
 toggle(pageAim, "Side toggle (Aim & Auto Aim)", "SideOn", function()
@@ -711,6 +729,9 @@ cycle(pageAim, "Mode bidik", "AimMode", {
 })
 stepper(pageAim, "FOV", "Fov", 10, 20, 500, updateCircle)
 stepper(pageAim, "Smooth", "Smooth", 1, 1, 30)
+section(pageAim, "Saat musuh mati")
+toggle(pageAim, "Aim mati saat musuh mati", "StopOnKill")
+toggle(pageAim, "Nyala lagi saat musuh hidup", "ResumeOnRespawn")
 section(pageAim, "Target")
 toggle(pageAim, "Wall Check", "WallCheck")
 toggle(pageAim, "Target Lock", "TargetLock")
@@ -792,7 +813,7 @@ task.spawn(function()
 	end
 end)
 
--- Tombol AIM (tahan)
+-- Tombol AIM (tahan) - hanya muncul kalau Auto Aim OFF
 aimBtn = Instance.new("TextButton")
 aimBtn.BackgroundColor3 = Color3.fromRGB(190, 60, 60)
 aimBtn.Text = "AIM"
@@ -809,8 +830,59 @@ applyAimBtn()
 refreshHud()
 
 ----------------------------------------------------------------
--- PENCARIAN TARGET (dibatasi interval) + warna FOV dinamis
+-- NYALA LAGI SAAT MUSUH HIDUP + PENCARIAN TARGET
 ----------------------------------------------------------------
+local function liveChar(plr)
+	local ch = plr and plr.Character
+	if ch and isAlive(ch) and ch:FindFirstChild("HumanoidRootPart") then return ch end
+	return nil
+end
+
+local function checkResume()
+	if not waiting then return end
+	if S.Enabled then
+		waiting = nil
+		return
+	end
+	if os.clock() - waiting.since < 1 then return end -- beri jeda setelah kill
+	if not isAlive(player.Character) then return end -- kamu sendiri sedang mati
+
+	local ready = false
+	local plr = waiting.plr
+	if plr then
+		-- lawan yang sama respawn dengan karakter baru
+		local ch = liveChar(plr)
+		if ch and ch ~= waiting.deadChar then
+			ready = true
+		else
+			-- atau server memberi lawan duel baru
+			local id = player:GetAttribute("DuelOpponent")
+			if id and id ~= plr.UserId then
+				ready = liveChar(Players:GetPlayerByUserId(id)) ~= nil
+			end
+		end
+	else
+		-- musuh NPC: cari NPC hidup lain / respawn
+		for _, e in ipairs(getEntities()) do
+			if not e.plr and e.char ~= waiting.deadChar and isAlive(e.char) then
+				ready = true
+				break
+			end
+		end
+	end
+
+	if ready then
+		waiting = nil
+		task.delay(0.5, function()
+			if not S.Enabled and isAlive(player.Character) then
+				S.Enabled = true
+				if refreshers.Enabled then refreshers.Enabled() end
+				refreshHud()
+			end
+		end)
+	end
+end
+
 local candidate = nil
 local searchTimer = 0
 
@@ -819,6 +891,8 @@ RunService.Heartbeat:Connect(function(dt)
 	if searchTimer < SEARCH_INTERVAL then return end
 	searchTimer = 0
 	camera = workspace.CurrentCamera
+
+	checkResume()
 
 	if not S.Enabled then
 		candidate = nil
@@ -891,6 +965,7 @@ local holding = false
 local target = nil       -- entity {char, plr, name}
 local lockMode = "Head"
 local lastWall, wallOk = 0, true
+local diedConn = nil     -- pantau kematian target
 
 local aimLook = nil      -- arah pandang hasil smoothing
 local rotHum = nil       -- humanoid yang AutoRotate-nya kita matikan
@@ -903,6 +978,29 @@ local function releaseAim()
 	end
 end
 
+-- dipanggil saat musuh yang sedang dikunci mati
+local function onEnemyDied(e)
+	if target ~= e then return end -- hanya target yang sedang dikunci
+	target = nil
+	releaseAim()
+	if diedConn then
+		diedConn:Disconnect()
+		diedConn = nil
+	end
+
+	if not (S.StopOnKill and S.Enabled) then return end
+
+	S.Enabled = false
+	holding = false
+	stroke.Color = WHITE
+	if refreshers.Enabled then refreshers.Enabled() end
+	refreshHud()
+
+	if S.ResumeOnRespawn then
+		waiting = { plr = e.plr, deadChar = e.char, since = os.clock() }
+	end
+end
+
 local function setTarget(e)
 	target = e
 	wallOk = true
@@ -911,6 +1009,15 @@ local function setTarget(e)
 		lockMode = (math.random() < 0.5) and "Head" or "Body"
 	else
 		lockMode = S.PartMode
+	end
+
+	if diedConn then
+		diedConn:Disconnect()
+		diedConn = nil
+	end
+	local hum = e.char and e.char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		diedConn = hum.Died:Connect(function() onEnemyDied(e) end)
 	end
 end
 
@@ -971,6 +1078,12 @@ RunService:BindToRenderStep("AimAssist", Enum.RenderPriority.Camera.Value + 1, f
 
 	local now = os.clock()
 
+	-- cadangan: musuh yang dikunci sudah mati (kalau event Died terlewat)
+	if target and target.char.Parent and not isAlive(target.char) then
+		onEnemyDied(target)
+		if not S.Enabled then return end
+	end
+
 	if target and not targetValid(target, now) then target = nil end
 
 	if (not target or not S.TargetLock) and candidate then
@@ -1028,7 +1141,7 @@ RunService:BindToRenderStep("AimAssist", Enum.RenderPriority.Camera.Value + 1, f
 end)
 
 ----------------------------------------------------------------
--- MATI -> AIM OFF, RESPAWN -> AIM NYALA LAGI
+-- KAMU MATI -> AIM OFF, RESPAWN -> AIM NYALA LAGI
 ----------------------------------------------------------------
 local function hookDeath(char)
 	local hum = char:WaitForChild("Humanoid", 10)
@@ -1051,6 +1164,7 @@ player.CharacterAdded:Connect(function(char)
 	hookDeath(char)
 	if resumeAim then
 		resumeAim = false
+		waiting = nil
 		task.wait(0.5) -- tunggu karakter dan kamera siap
 		S.Enabled = true
 		if refreshers.Enabled then refreshers.Enabled() end
@@ -1060,4 +1174,4 @@ end)
 
 if player.Character then task.spawn(hookDeath, player.Character) end
 
-print("[AimAssist] v6.5 loaded")
+print("[AimAssist] v6.7 loaded")
